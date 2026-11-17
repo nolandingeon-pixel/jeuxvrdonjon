@@ -64,13 +64,19 @@ AFRAME.registerComponent('game',{
 
   start(){
     const S = this.el.object3D, rigEl = document.getElementById('rig'), rig = rigEl.object3D;
-    const cam = document.getElementById('cam').object3D, hud = document.getElementById('hud');
+    const SWORD_TILT = .2;   // réglage : inclinaison de la lame (rad) ; + = vers le haut
+    const cam = this.el.camera || document.getElementById('cam').object3D, hud = document.getElementById('hud');
     const hands = {L:document.getElementById('lh'), R:document.getElementById('rh')};
-    const H = {L:hands.L.object3D, R:hands.R.object3D};
+    cam.add(hud.object3D);   // le HUD suit la vraie caméra (la tête)
+    // H = "main de jeu" : pose target-ray WebXR (axe -Z = direction visée exacte, Y = haut de la manette).
+    // Armes, arc et boule de feu s'y accrochent => plus de décalage d'angle.
+    const H = {L:hands.L.object3D, R:hands.R.object3D};   // repli si pas de session XR
+    [0,1].forEach(i=>{const c=this.el.renderer.xr.getController(i);rig.add(c);
+      c.addEventListener('connected',e=>{const hd=e.data&&e.data.handedness;if(hd==='left')H.L=c;else if(hd==='right')H.R=c;});});
     const other = k => k==='L'?'R':'L';
 
     /* ---------- Textures procédurales (briques, glow, tourbillon) ---------- */
-    const rnd = Array.from({length:60},Math.random);
+    const rnd = Array.from({length:60},Math.random), smemo = {};
     function stone(hue,rx,ry,side){
       const mk = bump=>{
         const c=document.createElement('canvas'); c.width=c.height=256; const g=c.getContext('2d');
@@ -84,7 +90,7 @@ AFRAME.registerComponent('game',{
         const t=new T.CanvasTexture(c); t.wrapS=t.wrapT=T.RepeatWrapping; t.repeat.set(rx,ry); t.anisotropy=4;
         if(!bump) t.colorSpace=T.SRGBColorSpace; return t;
       };
-      return new T.MeshStandardMaterial({map:mk(0),bumpMap:mk(1),bumpScale:3,roughness:.88,metalness:.05,side:side||T.FrontSide});
+      const key=[hue,rx,ry,side].join(); return smemo[key]||(smemo[key]=new T.MeshStandardMaterial({map:mk(0),bumpMap:mk(1),bumpScale:3,roughness:.88,metalness:.05,side:side||T.FrontSide}));
     }
     const gc={};
     const glowTex = rgb => gc[rgb]||(gc[rgb]=(()=>{
@@ -133,13 +139,12 @@ AFRAME.registerComponent('game',{
       g.add(sp); g.visible=false; S.add(g); return {g,torches,R};
     }
     const DUN = {
-      skeleton:{name:'Donjon des Squelettes',col:0x6a8cff,hue:230,kinds:['skeleton'],n:8},
-      ghoul:   {name:'Antre des Goules',     col:0x44ff88,hue:130,kinds:['ghoul'],n:6},
-      crypt:   {name:'Crypte Maudite',       col:0xff3a5a,hue:350,kinds:['skeleton','ghoul'],n:10}
+      skeleton:{name:'Donjon des Squelettes',col:0x6a8cff,hue:230,kinds:['skeleton'],n:10},
+      ghoul:   {name:'Antre des Goules',     col:0x44ff88,hue:130,kinds:['ghoul'],n:8},
+      crypt:   {name:'Crypte Maudite',       col:0xff3a5a,hue:350,kinds:['skeleton','ghoul'],n:14}
     };
     const lobby = hall(6.5,4.5,250,6); lobby.g.visible=true;
-    for(const k in DUN) DUN[k].hall = hall(10,5.5,DUN[k].hue,6);
-    let cur = lobby;
+
 
     /* ---------- Portails ---------- */
     function portal(label,col,x,z){
@@ -239,15 +244,101 @@ AFRAME.registerComponent('game',{
     function hurt(n){hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}
 
     function clearField(){E.splice(0).forEach(e=>S.remove(e.o));souls.splice(0).forEach(s=>S.remove(s.s));arrows.splice(0).forEach(a=>S.remove(a.m));fires.splice(0).forEach(f=>S.remove(f.m));}
-    function toLobby(){clearField();cur.g.visible=false;cur=lobby;lobby.g.visible=true;mode='lobby';exitP.visible=false;rig.position.set(0,0,2.5);rig.rotation.y=0;}
-    function enterDungeon(k){clearField();conf=DUN[k];cur.g.visible=false;cur=conf.hall;cur.g.visible=true;mode='dungeon';hp=100;spawned=0;spawnT=1.5;
-      exitP.visible=false;rig.position.set(0,0,6);rig.rotation.y=0;say(conf.name,3);}
+    /* ---------- Donjons procéduraux : salles, couloirs, boucles, portes secrètes ---------- */
+    const CELL=2.6, WH=3.4, DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
+    let D=null, dist=null, flowT=0, remain=0, power=1;
+    const cellOf=(x,z)=>[Math.floor(x/CELL),Math.floor(z/CELL)];
+    const cw=(i,j)=>V((i+.5)*CELL,0,(j+.5)*CELL);
+    const solidC=(i,j)=>{const c=D.g[j]&&D.g[j][i];return c===undefined||c==='#'||c==='D';};
+    const ptSolid=(x,z)=>{const [i,j]=cellOf(x,z);return solidC(i,j);};
+    function blocked(x,z){   // collision joueur (lobby = cercle, donjon = grille)
+      if(mode==='lobby')return Math.hypot(x,z)>lobby.R-1;
+      return ptSolid(x+.3,z+.3)||ptSolid(x-.3,z+.3)||ptSolid(x+.3,z-.3)||ptSolid(x-.3,z-.3);
+    }
+    const los=(ax,az,bx,bz)=>{const d=Math.hypot(bx-ax,bz-az),n=Math.ceil(d/.6);
+      for(let k=1;k<n;k++){const t=k/n;if(ptSolid(ax+(bx-ax)*t,az+(bz-az)*t))return false;}return true;};
+    function flow(){   // champ de distance (BFS) depuis le joueur : les ennemis suivent les couloirs
+      const [pi_,pj]=cellOf(head.x,head.z);dist=Array.from({length:D.H},()=>new Int16Array(D.W).fill(999));
+      if(solidC(pi_,pj))return; const q=[[pi_,pj]];dist[pj][pi_]=0;
+      for(let n=0;n<q.length;n++){const [i,j]=q[n];for(const [a,b] of DIRS){const x=i+a,y=j+b;
+        if(!solidC(x,y)&&dist[y][x]===999){dist[y][x]=dist[j][i]+1;q.push([x,y]);}}}
+    }
+    function hitSecret(p,r){   // casse une porte secrète touchée (épée, flèche, boule de feu)
+      let hit=false;
+      for(const d of D.doors){if(d.broken)continue;const cx=(d.i+.5)*CELL,cz=(d.j+.5)*CELL;
+        if(Math.hypot(p.x-cx,p.z-cz)<r&&p.y<WH){d.broken=true;D.g[d.j][d.i]='.';D.dg.remove(d.m,d.r);
+          burst(V(cx,1.2,cz),0x998877,80,3);burst(V(cx,1.5,cz),0x66ccff,40,2);say('Un passage secret s\'ouvre !',3);flowT=0;hit=true;}}
+      return hit;
+    }
+    function genDungeon(cf){
+      const W=33,Hh=23,g=Array.from({length:Hh},()=>Array(W).fill('#')),rooms=[];
+      for(let n=0;n<150&&rooms.length<8;n++){
+        const w=3+(Math.random()*3|0),h=3+(Math.random()*3|0),x=1+(Math.random()*(W-w-2)|0),y=1+(Math.random()*(Hh-h-2)|0);
+        if(rooms.some(r=>x<r.x+r.w+2&&x+w+2>r.x&&y<r.y+r.h+2&&y+h+2>r.y))continue;
+        rooms.push({x,y,w,h,cx:x+(w>>1),cy:y+(h>>1)});
+        for(let j=0;j<h;j++)for(let i=0;i<w;i++)g[y+j][x+i]='.';
+      }
+      if(rooms.length<4)return null;
+      rooms.sort((a,b)=>a.cx-b.cx);
+      const carve=(x,y)=>{if(g[y][x]==='#')g[y][x]='.';};
+      const link=(a,b)=>{let x=a.cx,y=a.cy;
+        const mvx=()=>{while(x!==b.cx){carve(x,y);x+=Math.sign(b.cx-x);}},mvy=()=>{while(y!==b.cy){carve(x,y);y+=Math.sign(b.cy-y);}};
+        Math.random()<.5?(mvx(),mvy()):(mvy(),mvx());carve(x,y);};
+      for(let i=1;i<rooms.length;i++)link(rooms[i-1],rooms[i]);       // chemin principal
+      link(rooms[0],rooms[3]); if(rooms.length>5)link(rooms[2],rooms[5]); // raccourcis / boucles
+      /* Salles secrètes 3x3 isolées, derrière une porte fissurée (D) */
+      const doors=[],chests=[];
+      for(let n=0;n<800&&doors.length<2;n++){
+        const i=1+(Math.random()*(W-2)|0),j=1+(Math.random()*(Hh-2)|0),[dx,dz]=DIRS[Math.random()*4|0];
+        if(g[j][i]!=='.')continue;
+        const ci=i+dx*3,cj=j+dz*3; if(ci<3||ci>W-4||cj<3||cj>Hh-4)continue;
+        let ok=true;for(let a=-2;a<=2&&ok;a++)for(let b=-2;b<=2;b++)if(g[cj+b][ci+a]!=='#'){ok=false;break;}
+        if(!ok)continue;
+        for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++)g[cj+b][ci+a]='.';
+        g[j+dz][i+dx]='D';doors.push({i:i+dx,j:j+dz,dx,dz});chests.push({i:ci,j:cj,k:doors.length===1?'C':'P'});
+      }
+      const first=rooms[0],last=rooms[rooms.length-1],dg=new T.Group(),mx=new T.Matrix4();
+      const wm=stone(cf.hue,2.5,3),fm=stone(cf.hue,W*CELL/1.6,Hh*CELL/1.6);
+      /* Murs : un seul InstancedMesh (1 draw call), seulement ceux au contact d'un sol */
+      const solids=[];for(let j=0;j<Hh;j++)for(let i=0;i<W;i++)if(g[j][i]==='#'&&[-1,0,1].some(b=>[-1,0,1].some(a=>g[j+b]&&g[j+b][i+a]!==undefined&&g[j+b][i+a]!=='#')))solids.push([i,j]);
+      const walls=new T.InstancedMesh(new T.BoxGeometry(CELL,WH,CELL),wm,solids.length);
+      solids.forEach(([i,j],n)=>{mx.setPosition((i+.5)*CELL,WH/2,(j+.5)*CELL);walls.setMatrixAt(n,mx);});
+      walls.frustumCulled=false;dg.add(walls);
+      const fl=new T.Mesh(new T.PlaneGeometry(W*CELL,Hh*CELL).rotateX(-Math.PI/2),fm);fl.position.set(W*CELL/2,0,Hh*CELL/2);
+      const ce=new T.Mesh(new T.PlaneGeometry(W*CELL,Hh*CELL).rotateX(Math.PI/2),fm);ce.position.set(W*CELL/2,WH,Hh*CELL/2);dg.add(fl,ce);
+      /* Torches réparties dans le donjon ; seules les 4 plus proches du joueur éclairent vraiment */
+      const cands=[];solids.forEach(([i,j])=>{for(const [dx,dz] of DIRS)if(g[j+dz]&&g[j+dz][i+dx]==='.'){
+        cands.push(V((i+.5+dx*.5)*CELL+dx*.1,1.9,(j+.5+dz*.5)*CELL+dz*.1));break;}});
+      const stp=Math.max(1,Math.ceil(cands.length/26)),torches=cands.filter((_,n)=>n%stp===0).map(p=>{const f=spr('255,140,40',1);f.position.copy(p);dg.add(f);return {p,f};});
+      const sticks=new T.InstancedMesh(new T.CylinderGeometry(.03,.05,.45,6),new T.MeshStandardMaterial({color:0x2b1a10,roughness:.9}),torches.length);
+      torches.forEach((q,n)=>{mx.setPosition(q.p.x,q.p.y-.3,q.p.z);sticks.setMatrixAt(n,mx);});sticks.frustumCulled=false;dg.add(sticks);
+      const tl=[0,1,2,3].map(()=>{const l=new T.PointLight(0xff7a2a,1.6,9,2);dg.add(l);return l;}),lan=new T.PointLight(0x7788ff,.8,8,2);dg.add(lan);
+      /* Portes secrètes : fissure bleue lumineuse sur la face visible */
+      const dm=new T.MeshStandardMaterial({map:wm.map,bumpMap:wm.bumpMap,bumpScale:3,roughness:.88,emissive:0x0a1a3a});
+      doors.forEach(d=>{const cx=(d.i+.5)*CELL,cz=(d.j+.5)*CELL;d.m=new T.Mesh(new T.BoxGeometry(CELL,WH,CELL),dm);d.m.position.set(cx,WH/2,cz);
+        d.r=spr('90,200,255',1.1);d.r.position.set(cx-d.dx*(CELL/2+.1),1.3,cz-d.dz*(CELL/2+.1));dg.add(d.m,d.r);});
+      const gold=new T.MeshStandardMaterial({color:0xb08a3a,metalness:.9,roughness:.3}),wood=new T.MeshStandardMaterial({color:0x5a3a1a,roughness:.7});
+      chests.forEach(c=>{const m=new T.Group(),b=new T.Mesh(new T.BoxGeometry(.7,.4,.45),wood),tr=new T.Mesh(new T.BoxGeometry(.72,.1,.47),gold),
+        gl=spr(c.k==='C'?'80,255,140':'255,120,60',1.4);b.position.y=.2;tr.position.y=.42;gl.position.y=.6;m.add(b,tr,gl);m.position.copy(cw(c.i,c.j));c.m=m;dg.add(m);});
+      const spawns=[];for(let k=0;k<cf.n;k++){const r=rooms[1+k%(rooms.length-1)];
+        spawns.push({x:(r.x+Math.random()*r.w)*CELL,z:(r.y+Math.random()*r.h)*CELL,kind:cf.kinds[k%cf.kinds.length],done:false});}
+      S.add(dg);
+      return {g,W,H:Hh,dg,torches,tl,lan,doors,chests,spawns,tflow:0,st:cw(first.cx,first.cy),ex:cw(last.cx,last.cy)};
+    }
+    function disposeD(){S.remove(D.dg);D.dg.traverse(o=>{if(o.geometry)o.geometry.dispose();});D=null;}
+    function toLobby(){clearField();if(D)disposeD();lobby.g.visible=true;mode='lobby';exitP.visible=false;dist=null;
+      rig.position.set(0,0,2.5);rig.rotation.y=0;if(S.fog)S.fog.density=.05;}
+    function enterDungeon(k){
+      clearField();if(D)disposeD();conf=DUN[k];let n=0;do{D=genDungeon(conf);}while(!D&&++n<20);
+      lobby.g.visible=false;mode='dungeon';hp=100;power=1;dist=null;flowT=0;remain=conf.n;
+      rig.position.set(D.st.x,0,D.st.z);rig.rotation.y=Math.atan2(-(D.ex.x-D.st.x),-(D.ex.z-D.st.z));
+      exitP.position.copy(D.ex);exitP.visible=false;if(S.fog)S.fog.density=.06;say(conf.name+' — cherchez les passages secrets',4);}
     toLobby();
 
     /* ---------- Épée : saisir, lâcher, rappeler ---------- */
     const _p=V(),_q=new T.Quaternion(),head=V();
-    const wp=(o,out=V())=>o.getWorldPosition(out);
-    function holdSword(k){sw.hand=k;sw.st='held';sw.rec=false;H[k].add(sw.o);sw.o.position.set(0,0,0);sw.o.rotation.set(-Math.PI/2+.35,0,0);sw.o.visible=true;buzz(k,.7,80);}
+    const wp=(o,out=V())=>{o.updateWorldMatrix(true,false);return o.getWorldPosition(out);};
+    function holdSword(k){sw.hand=k;sw.st='held';sw.rec=false;H[k].add(sw.o);sw.o.position.set(0,0,0);sw.o.rotation.set(-Math.PI/2+SWORD_TILT,0,0);sw.o.visible=true;buzz(k,.7,80);}
     function freeSword(){S.attach(sw.o);sw.st='drop';sw.v.set(0,0,0);}
     function toggleBow(){
       if(!bow.on){
@@ -261,13 +352,15 @@ AFRAME.registerComponent('game',{
     const mkFire=()=>{const g=new T.Group();g.add(new T.Mesh(fbG,fbM),spr('255,120,30',3.4));return g;};
     const charge={k:null,t:0,g:mkFire()};
     function launchFire(){
-      const k=charge.k, pw=Math.min(charge.t,1.5)/1.5; H[k].remove(charge.g);
-      const m=mkFire(); wp(charge.g,m.position); m.scale.setScalar(.06+pw*.12); S.add(m);
-      const d=V(0,0,-1).applyQuaternion(H[k].getWorldQuaternion(_q)); fires.push({m,v:d.multiplyScalar(14),pw,life:3,s:.06+pw*.12}); buzz(k,.9,150); charge.k=null;
+      const k=charge.k, pw=Math.min(charge.t,1.5)/1.5, m=mkFire();
+      wp(charge.g,m.position);   // position lue AVANT de retirer la boule de la main
+      const d=V(0,0,-1).applyQuaternion(H[k].getWorldQuaternion(_q)); H[k].remove(charge.g);
+      m.scale.setScalar(.06+pw*.12); S.add(m); fires.push({m,v:d.multiplyScalar(14),pw,life:3,s:.06+pw*.12}); buzz(k,.9,150); charge.k=null;
     }
     function explode(f){
       burst(f.m.position,0xff7a22,120,5);burst(f.m.position,0xffd27a,60,3);
-      const r=2.2+f.pw*1.3; for(const e of E.slice()) if(!e.ally&&e.o.position.distanceTo(f.m.position)<r) dmgE(e,Math.ceil(2+f.pw*3),true);
+      const r=2.2+f.pw*1.3; if(mode==='dungeon')hitSecret(f.m.position,3.4);
+      for(const e of E.slice()) if(!e.ally&&e.o.position.distanceTo(f.m.position)<r) dmgE(e,Math.ceil((2+f.pw*3)*power),true);
     }
     /* ---------- Flèche d'énergie ---------- */
     function shoot(){
@@ -325,10 +418,11 @@ AFRAME.registerComponent('game',{
       cam.getWorldPosition(head);
       /* -- Déplacement (stick gauche) -- */
       if(Math.hypot(stick.x,stick.y)>.15){
-        cam.getWorldDirection(fwd);fwd.y=0;fwd.normalize();
-        rig.position.x+=(fwd.x*-stick.y+-fwd.z*stick.x)*2.5*dt; rig.position.z+=(fwd.z*-stick.y+fwd.x*stick.x)*2.5*dt;
+        fwd.set(0,0,-1).applyQuaternion(cam.getWorldQuaternion(_q));fwd.y=0;
+        if(fwd.lengthSq()>1e-4){fwd.normalize();   // avant = regard ; stick vers l'avant => y négatif
+          const mx_=(fwd.x*-stick.y-fwd.z*stick.x)*2.5*dt,mz_=(fwd.z*-stick.y+fwd.x*stick.x)*2.5*dt;
+          if(!blocked(head.x+mx_,head.z))rig.position.x+=mx_; if(!blocked(head.x,head.z+mz_))rig.position.z+=mz_;}
       }
-      const lim=cur.R-1.5,rr=Math.hypot(rig.position.x,rig.position.z); if(rr>lim){rig.position.x*=lim/rr;rig.position.z*=lim/rr;}
 
       /* -- Portails -- */
       portals.forEach(p=>{p.g.userData.disc.rotation.z+=dt;});exitP.userData.disc.rotation.z+=dt;
@@ -353,6 +447,7 @@ AFRAME.registerComponent('game',{
         sw.tipV.copy(tip).sub(sw.prevTip).divideScalar(dt); const spd=sw.tipV.length(); sw.prevTip.copy(tip);
         if(spd>2.2&&spd<80) for(const e of E.slice()){ if(e.ally||e.hitCd>0||e.rise>0)continue;
           if(segDist(tip,e)<.55||segDist(mid,e)<.55){e.hitCd=.35;dmgE(e,spd>4.5?2:1);burst(tip,0xffffff,14,3);if(sw.hand)buzz(sw.hand,1,80);}}
+        if(spd>3&&spd<80&&mode==='dungeon'&&hitSecret(tip,1.7)&&sw.hand)buzz(sw.hand,1,150);
         /* Geste d'ombre : planter l'épée au sol près d'une âme */
         if(sw.st==='held'&&tip.y<.2&&sw.tipV.y<-1.2)for(const s of souls)if(Math.hypot(s.s.position.x-tip.x,s.s.position.z-tip.z)<1.6){summon(s);break;}
       }
@@ -370,32 +465,43 @@ AFRAME.registerComponent('game',{
 
       /* -- Projectiles -- */
       for(let i=arrows.length-1;i>=0;i--){const a=arrows[i];a.v.y-=3*dt;a.m.position.addScaledVector(a.v,dt);a.m.quaternion.setFromUnitVectors(V(0,0,-1),tmp.copy(a.v).normalize());a.life-=dt;
-        burst(a.m.position,0x66ccff,1,.3);let hit=a.life<=0||a.m.position.y<0;
-        for(const e of E.slice())if(!e.ally&&e.rise<=0&&segDist(a.m.position,e)<.5){dmgE(e,2);hit=true;burst(a.m.position,0x9fd6ff,20,3);break;}
+        burst(a.m.position,0x66ccff,1,.3);let hit=a.life<=0||a.m.position.y<0||(mode==='dungeon'&&(ptSolid(a.m.position.x,a.m.position.z)||hitSecret(a.m.position,1.9)));
+        for(const e of E.slice())if(!e.ally&&e.rise<=0&&segDist(a.m.position,e)<.5){dmgE(e,Math.ceil(2*power));hit=true;burst(a.m.position,0x9fd6ff,20,3);break;}
         if(hit){S.remove(a.m);arrows.splice(i,1);}}
       for(let i=fires.length-1;i>=0;i--){const f=fires[i];f.m.position.addScaledVector(f.v,dt);f.life-=dt;burst(f.m.position,0xff6a1a,2,.8);
-        let hit=f.life<=0||f.m.position.y<.1;
+        let hit=f.life<=0||f.m.position.y<.1||(mode==='dungeon'&&ptSolid(f.m.position.x,f.m.position.z));
         for(const e of E)if(!e.ally&&e.rise<=0&&segDist(f.m.position,e)<.6+f.s){hit=true;break;}
         if(hit){explode(f);S.remove(f.m);fires.splice(i,1);}}
 
       /* -- Vagues d'ennemis -- */
       if(mode==='dungeon'){
-        const hostiles=E.filter(e=>!e.ally).length; spawnT-=dt;
-        if(spawned<conf.n&&spawnT<=0&&hostiles<5){const a=Math.random()*6.283,kd=conf.kinds[spawned%conf.kinds.length];
-          spawn(kd,false,V(Math.sin(a)*(cur.R-1.8),0,Math.cos(a)*(cur.R-1.8)));spawned++;spawnT=2.2;}
-        if(spawned>=conf.n&&hostiles===0&&!exitP.visible){exitP.visible=true;say('Donjon nettoyé ! Le portail est ouvert.',4);}
+        flowT-=dt;if(flowT<=0){flowT=.35;flow();}
+        for(const s of D.spawns)if(!s.done){const [i,j]=cellOf(s.x,s.z);if(dist[j][i]<=7){s.done=true;spawn(s.kind,false,V(s.x,0,s.z));}}
+        remain=D.spawns.filter(s=>!s.done).length+E.filter(e=>!e.ally).length;
+        if(remain===0&&!exitP.visible){exitP.visible=true;say('Gardiens vaincus ! Le portail s\'est ouvert au fond du donjon.',5);}
+        for(const c of D.chests)if(!c.got&&Math.hypot(head.x-c.m.position.x,head.z-c.m.position.z)<1.1){
+          c.got=true;D.dg.remove(c.m);burst(V(c.m.position.x,.6,c.m.position.z),c.k==='C'?0x66ff99:0xff8844,70,3);
+          if(c.k==='C'){hp=100;say('Fontaine de vie : PV restaurés !',4);}else{power+=.5;say('Rune de puissance : sorts et flèches +50 %',4);}
+          buzz('L',.8,200);buzz('R',.8,200);}
       }
       /* -- IA ennemis / ombres alliées -- */
       for(const e of E.slice()){
         const o=e.o,P=o.position;e.hitCd-=dt;e.cd-=dt;
         if(e.rise>0){e.rise-=dt;P.y=-1.8*Math.max(e.rise,0);continue;}
-        const cand=e.ally?E.filter(f=>!f.ally):[{pl:1,o:{position:head}},...E.filter(f=>f.ally)];
+        const [ci,cj]=cellOf(P.x,P.z),dd0=dist&&dist[cj]?dist[cj][ci]:999;
+        if(!e.ally&&dd0>9)continue;   // ennemi endormi tant que le joueur est loin
+        const cand=e.ally?E.filter(f=>!f.ally&&los(P.x,P.z,f.o.position.x,f.o.position.z)):[{pl:1,o:{position:head}},...E.filter(f=>f.ally)];
         let ob=null,d=1e9;for(const c of cand){const dd=Math.hypot(c.o.position.x-P.x,c.o.position.z-P.z);if(dd<d){d=dd;ob=c;}}
         let fol=false;if(!ob){fol=true;ob={pl:1,o:{position:head}};d=Math.hypot(head.x-P.x,head.z-P.z);}
-        const dx=ob.o.position.x-P.x,dz=ob.o.position.z-P.z;o.rotation.y=Math.atan2(dx,dz);
+        const seen=los(P.x,P.z,ob.o.position.x,ob.o.position.z);
+        let tx=ob.o.position.x,tz=ob.o.position.z;
+        if(!seen){let best=dd0;tx=null;   // pas de vue directe : on suit le couloir
+          for(const [a,b] of DIRS){const v=dist[cj+b]&&dist[cj+b][ci+a];if(v!==undefined&&v<best){best=v;tx=(ci+a+.5)*CELL;tz=(cj+b+.5)*CELL;}}
+          if(tx===null){tx=head.x;tz=head.z;}}
+        const dx=tx-P.x,dz=tz-P.z,md=Math.hypot(dx,dz)||1;o.rotation.y=Math.atan2(dx,dz);
         const stop=fol?2.4:1.0;
-        if(d>stop){P.x+=dx/d*e.sp*dt;P.z+=dz/d*e.sp*dt;e.ph+=dt*e.sp*5;}
-        if(!fol&&d<1.2&&e.cd<=0){e.cd=1.3;e.atk=.35;if(ob.pl)hurt(e.dmg);else dmgE(ob,1);}
+        if((seen?d:9)>stop){P.x+=dx/md*e.sp*dt;P.z+=dz/md*e.sp*dt;e.ph+=dt*e.sp*5;}
+        if(!fol&&seen&&d<1.2&&e.cd<=0){e.cd=1.3;e.atk=.35;if(ob.pl)hurt(e.dmg);else dmgE(ob,1);}
         e.atk=Math.max(e.atk-dt,0);
         const sw_=Math.sin(e.ph)*.6;e.legs[0].rotation.x=sw_;e.legs[1].rotation.x=-sw_;
         e.arms[0].rotation.x=e.atk>0?-1.8:-sw_;e.arms[1].rotation.x=e.atk>0?-1.8:sw_;
@@ -410,11 +516,17 @@ AFRAME.registerComponent('game',{
       pg.attributes.position.needsUpdate=pg.attributes.color.needsUpdate=true;
 
       /* -- Torches vacillantes (seulement la salle active) -- */
-      for(const q of cur.torches){const f=.8+.2*Math.sin(t*.013+q.i*7)+.1*Math.sin(t*.037+q.i*3);q.li.intensity=1.5*f;q.flame.scale.set(1.1*(.9+.1*f),1.1*f,1);}
+      if(mode==='dungeon'){
+        D.lan.position.copy(head);D.tflow-=dt;
+        if(D.tflow<=0){D.tflow=.3;const s=D.torches.slice().sort((a,b)=>a.p.distanceToSquared(head)-b.p.distanceToSquared(head));
+          D.tl.forEach((l,i)=>{if(s[i])l.position.copy(s[i].p);});}
+        D.torches.forEach((q,i)=>{const f=.8+.2*Math.sin(t*.013+i*7)+.1*Math.sin(t*.037+i*3);q.f.scale.set(.9+.1*f,f,1);});
+        D.tl.forEach((l,i)=>{l.intensity=1.6*(.8+.2*Math.sin(t*.013+i*5)+.1*Math.sin(t*.037+i));});
+      }else for(const q of lobby.torches){const f=.8+.2*Math.sin(t*.013+q.i*7)+.1*Math.sin(t*.037+q.i*3);q.li.intensity=1.5*f;q.flame.scale.set(1.1*(.9+.1*f),1.1*f,1);}
 
       /* -- HUD (rafraîchi uniquement s'il change) -- */
       flash=Math.max(flash-dt,0);msgT-=dt;
-      const txt=`PV ${Math.max(hp,0)|0}   Ombres ${E.filter(e=>e.ally).length}${mode==='dungeon'?`   Ennemis ${E.filter(e=>!e.ally).length+conf.n-spawned}`:''}${msgT>0?'\n'+msg:''}`;
+      const txt=`PV ${Math.max(hp,0)|0}   Ombres ${E.filter(e=>e.ally).length}${mode==='dungeon'?`   Ennemis ${remain}`:''}${msgT>0?'\n'+msg:''}`;
       if(txt!==lastHud+flash){lastHud=txt;hud.setAttribute('text',{value:txt,color:flash>0?'#ff5a5a':'#cfe3ff'});}
     };
   }
