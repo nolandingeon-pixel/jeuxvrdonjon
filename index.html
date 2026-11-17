@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monarque des Ombres VR</title>
+<!-- A-Frame 1.6.0 (embarque Three.js). Aucun asset externe : tout est généré en code. -->
+<script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+<style>
+  body{margin:0;background:#000;font-family:"Palatino Linotype",Palatino,Georgia,serif}
+  #intro{position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:2rem;text-align:center;color:#d6dcff;
+    background:radial-gradient(ellipse at 50% 35%,#20123f 0%,#07050f 60%,#000 100%)}
+  #intro h1{margin:0;font-weight:400;font-size:clamp(2.2rem,7vw,5rem);letter-spacing:.12em;text-shadow:0 0 40px #6a4cff}
+  #intro p{max-width:38rem;line-height:1.6;opacity:.75;margin:1.2rem 0 0}
+  #go{margin-top:2.2rem;padding:1.3rem 3.4rem;font:inherit;font-size:1.7rem;letter-spacing:.08em;color:#fff;cursor:pointer;
+    background:linear-gradient(135deg,#3b22b8,#8a3df0);border:2px solid #b9a4ff;border-radius:60px;box-shadow:0 0 45px #7a4cff}
+  #go:hover,#go:focus-visible{box-shadow:0 0 70px #a77cff;outline:none}
+  #help{font-size:.9rem;margin-top:2rem;opacity:.6;max-width:40rem;line-height:1.5}
+</style>
+</head>
+<body>
+
+<div id="intro">
+  <h1>MONARQUE DES OMBRES</h1>
+  <p>Saisissez l'épée du sanctuaire, franchissez un portail, et relevez les morts pour qu'ils combattent à vos côtés.</p>
+  <button id="go">Entrer en VR</button>
+  <div id="help">Quest : gâchette près de l'épée = saisir · grip main vide (maintenu) = rappel de l'épée · grip main armée = lâcher ·
+    X/A = réveiller une ombre · Y/B = arc magique · gâchette main libre = boule de feu · stick gauche = marcher · stick droit = tourner</div>
+</div>
+
+<!-- vr-mode-ui désactivé : on utilise notre propre bouton. -->
+<a-scene id="sc" game vr-mode-ui="enabled:false"
+  renderer="antialias:true;foveationLevel:1;highRefreshRate:true;physicallyCorrectLights:false"
+  shadow="type:pcfsoft" background="color:#020204" fog="type:exponential;color:#04040a;density:0.05">
+  <a-entity id="rig">
+    <a-entity id="cam" camera position="0 1.6 0">
+      <!-- HUD : PV, ombres alliées, ennemis restants -->
+      <a-entity id="hud" position="0 -0.34 -0.9" text="value:;align:center;width:1.4;color:#cfe3ff"></a-entity>
+    </a-entity>
+    <a-entity id="lh" oculus-touch-controls="hand:left"></a-entity>
+    <a-entity id="rh" oculus-touch-controls="hand:right"></a-entity>
+  </a-entity>
+</a-scene>
+
+<script>
+const T = AFRAME.THREE;
+const V = (x=0,y=0,z=0)=>new T.Vector3(x,y,z);
+
+/* =========================================================
+   Entrée VR + écrans
+   ========================================================= */
+const scEl = document.getElementById('sc'), intro = document.getElementById('intro');
+document.getElementById('go').onclick = ()=>{ scEl.enterVR().catch(()=>{ intro.style.display='none'; }); };
+scEl.addEventListener('enter-vr',()=>intro.style.display='none');
+scEl.addEventListener('exit-vr',()=>intro.style.display='flex');
+
+/* =========================================================
+   Composant principal : tout le jeu vit ici
+   ========================================================= */
+AFRAME.registerComponent('game',{
+  init(){ this.el.hasLoaded ? this.start() : this.el.addEventListener('loaded',()=>this.start()); },
+  tick(t,dt){ if(this.ready) this.loop(t, Math.min(dt/1000,.05)); },
+
+  start(){
+    const S = this.el.object3D, rigEl = document.getElementById('rig'), rig = rigEl.object3D;
+    const cam = document.getElementById('cam').object3D, hud = document.getElementById('hud');
+    const hands = {L:document.getElementById('lh'), R:document.getElementById('rh')};
+    const H = {L:hands.L.object3D, R:hands.R.object3D};
+    const other = k => k==='L'?'R':'L';
+
+    /* ---------- Textures procédurales (briques, glow, tourbillon) ---------- */
+    const rnd = Array.from({length:60},Math.random);
+    function stone(hue,rx,ry,side){
+      const mk = bump=>{
+        const c=document.createElement('canvas'); c.width=c.height=256; const g=c.getContext('2d');
+        g.fillStyle = bump?'#000':`hsl(${hue},10%,4%)`; g.fillRect(0,0,256,256);
+        for(let r=0;r<8;r++) for(let i=-1;i<4;i++){
+          const l=rnd[(r*5+i+1)%60], x=i*64+(r%2?32:0);
+          g.fillStyle = bump?`rgb(${120+l*100|0},${120+l*100|0},${120+l*100|0})`:`hsl(${hue},${10+l*8}%,${9+l*10}%)`;
+          g.fillRect(x+2,r*32+2,60,28);
+        }
+        for(let i=0;i<2500;i++){const v=Math.random()*70|0;g.fillStyle=`rgba(${v},${v},${v},.2)`;g.fillRect(Math.random()*256,Math.random()*256,2,2);}
+        const t=new T.CanvasTexture(c); t.wrapS=t.wrapT=T.RepeatWrapping; t.repeat.set(rx,ry); t.anisotropy=4;
+        if(!bump) t.colorSpace=T.SRGBColorSpace; return t;
+      };
+      return new T.MeshStandardMaterial({map:mk(0),bumpMap:mk(1),bumpScale:3,roughness:.88,metalness:.05,side:side||T.FrontSide});
+    }
+    const gc={};
+    const glowTex = rgb => gc[rgb]||(gc[rgb]=(()=>{
+      const c=document.createElement('canvas'); c.width=c.height=64; const g=c.getContext('2d');
+      const r=g.createRadialGradient(32,32,0,32,32,32);
+      r.addColorStop(0,`rgba(${rgb},1)`); r.addColorStop(.4,`rgba(${rgb},.35)`); r.addColorStop(1,`rgba(${rgb},0)`);
+      g.fillStyle=r; g.fillRect(0,0,64,64); const t=new T.CanvasTexture(c); t.colorSpace=T.SRGBColorSpace; return t; })());
+    const spr = (rgb,s,add=true)=>{
+      const m=new T.Sprite(new T.SpriteMaterial({map:glowTex(rgb),blending:add?T.AdditiveBlending:T.NormalBlending,depthWrite:false,transparent:true}));
+      m.scale.setScalar(s); return m; };
+    function swirlTex(){
+      const c=document.createElement('canvas'); c.width=c.height=128; const g=c.getContext('2d');
+      const r=g.createRadialGradient(64,64,0,64,64,64); r.addColorStop(0,'rgba(255,255,255,.9)'); r.addColorStop(.8,'rgba(255,255,255,.35)'); r.addColorStop(1,'rgba(255,255,255,0)');
+      g.fillStyle=r; g.fillRect(0,0,128,128); g.translate(64,64); g.strokeStyle='rgba(255,255,255,.8)'; g.lineWidth=3;
+      for(let k=0;k<8;k++){g.rotate(Math.PI/4);g.beginPath();g.moveTo(8,0);g.quadraticCurveTo(30,28,58,6);g.stroke();}
+      return new T.CanvasTexture(c); }
+    const labelSprite = txt=>{
+      const c=document.createElement('canvas'); c.width=512; c.height=128; const g=c.getContext('2d');
+      g.font='54px Palatino,Georgia,serif'; g.textAlign='center'; g.fillStyle='#e6e9ff'; g.shadowColor='#7a5cff'; g.shadowBlur=18; g.fillText(txt,256,78);
+      const t=new T.CanvasTexture(c); t.colorSpace=T.SRGBColorSpace;
+      const s=new T.Sprite(new T.SpriteMaterial({map:t,transparent:true,depthWrite:false})); s.scale.set(2.8,.7,1); return s; };
+
+    /* ---------- Lumière globale ---------- */
+    S.add(new T.HemisphereLight(0x405088,0x140a0a,.5));
+
+    /* ---------- Salles : lobby + donjons (murs, sol, piliers, torches, ombres douces) ---------- */
+    const pillarMat = stone(230,1,3);
+    function hall(R,Hh,hue,nTorch){
+      const g=new T.Group(), torches=[];
+      const wall=new T.Mesh(new T.CylinderGeometry(R,R,Hh,40,1,true),stone(hue,R*1.4,Hh/1.6,T.BackSide)); wall.position.y=Hh/2; wall.receiveShadow=true;
+      const floor=new T.Mesh(new T.CircleGeometry(R,40),stone(hue,R/1.2,R/1.2)); floor.rotation.x=-Math.PI/2; floor.receiveShadow=true;
+      const ceil=new T.Mesh(new T.CircleGeometry(R,40),stone(hue,R/1.2,R/1.2)); ceil.rotation.x=Math.PI/2; ceil.position.y=Hh;
+      g.add(wall,floor,ceil);
+      for(let i=0;i<8;i++){const a=i/8*Math.PI*2,p=new T.Mesh(new T.CylinderGeometry(.35,.42,Hh,14),pillarMat);
+        p.position.set(Math.sin(a)*(R-.6),Hh/2,Math.cos(a)*(R-.6)); p.castShadow=p.receiveShadow=true; g.add(p);}
+      for(let i=0;i<nTorch;i++){
+        const a=(i+.5)/nTorch*Math.PI*2, sx=Math.sin(a), cz=Math.cos(a), t=new T.Group();
+        t.position.set(sx*(R-.15),2.2,cz*(R-.15));
+        const stick=new T.Mesh(new T.CylinderGeometry(.04,.06,.55,8),new T.MeshStandardMaterial({color:0x2b1a10,roughness:.9})); stick.position.y=-.1;
+        const flame=spr('255,140,40',1.1); flame.position.y=.3;
+        const li=new T.PointLight(0xff7a2a,1.5,10,2); li.position.set(-sx*.6,.4,-cz*.6);
+        t.add(stick,flame,li); g.add(t); torches.push({flame,li,i});
+      }
+      const sp=new T.SpotLight(0x8aa0ff,2,0,.95,.9,1); sp.position.set(0,Hh-.3,0); sp.castShadow=true;
+      sp.shadow.mapSize.set(1024,1024); sp.shadow.bias=-.0005; sp.shadow.camera.near=.5; sp.shadow.camera.far=Hh*3;
+      g.add(sp); g.visible=false; S.add(g); return {g,torches,R};
+    }
+    const DUN = {
+      skeleton:{name:'Donjon des Squelettes',col:0x6a8cff,hue:230,kinds:['skeleton'],n:8},
+      ghoul:   {name:'Antre des Goules',     col:0x44ff88,hue:130,kinds:['ghoul'],n:6},
+      crypt:   {name:'Crypte Maudite',       col:0xff3a5a,hue:350,kinds:['skeleton','ghoul'],n:10}
+    };
+    const lobby = hall(6.5,4.5,250,6); lobby.g.visible=true;
+    for(const k in DUN) DUN[k].hall = hall(10,5.5,DUN[k].hue,6);
+    let cur = lobby;
+
+    /* ---------- Portails ---------- */
+    function portal(label,col,x,z){
+      const g=new T.Group(); g.position.set(x,0,z); g.rotation.y=Math.atan2(-x,-z);
+      const ring=new T.Mesh(new T.TorusGeometry(1,.09,12,48),new T.MeshStandardMaterial({color:0x151525,emissive:col,emissiveIntensity:1.8,roughness:.4}));
+      ring.scale.set(.8,1.15,1); ring.position.y=1.25;
+      const disc=new T.Mesh(new T.CircleGeometry(.95,32),new T.MeshBasicMaterial({map:swirlTex(),color:col,transparent:true,opacity:.85,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide}));
+      disc.scale.set(.8,1.15,1); disc.position.y=1.25;
+      const lb=labelSprite(label); lb.position.y=2.9;
+      g.add(ring,disc,lb); g.userData.disc=disc; S.add(g); return g;
+    }
+    const portals=[]; Object.keys(DUN).forEach((k,i)=>{
+      const a=(i-1)*.85, p=portal(DUN[k].name,DUN[k].col,Math.sin(a)*5.2,-Math.cos(a)*5.2); lobby.g.add(p); portals.push({k,g:p,pos:p.position});
+    });
+    const exitP = portal('Retour au sanctuaire',0xaa88ff,0,-3); exitP.visible=false;
+
+    /* ---------- Piédestal + épée magique ---------- */
+    const ped=new T.Mesh(new T.CylinderGeometry(.35,.5,.9,16),stone(250,2,1)); ped.position.set(0,.45,-2); ped.castShadow=true; lobby.g.add(ped);
+    const rune=new T.Mesh(new T.TorusGeometry(1.1,.03,8,48),new T.MeshBasicMaterial({color:0x6a8cff})); rune.rotation.x=Math.PI/2; rune.position.set(0,.03,-2); lobby.g.add(rune);
+
+    function mkSword(){
+      const g=new T.Group();
+      const steel=new T.MeshStandardMaterial({color:0xaab4d0,metalness:1,roughness:.2,emissive:0x2233ff,emissiveIntensity:.4});
+      const gold=new T.MeshStandardMaterial({color:0xb08a3a,metalness:.9,roughness:.35});
+      const blade=new T.Mesh(new T.CylinderGeometry(.004,.034,.9,4),steel); blade.position.y=.55; blade.scale.z=.22; blade.rotation.y=Math.PI/4; blade.castShadow=true;
+      const guard=new T.Mesh(new T.CapsuleGeometry(.02,.26,4,8),gold); guard.rotation.z=Math.PI/2; guard.position.y=.1;
+      const grip=new T.Mesh(new T.CylinderGeometry(.022,.022,.2,10),new T.MeshStandardMaterial({color:0x1b1020,roughness:.8})); grip.position.y=-.02;
+      const pom=new T.Mesh(new T.SphereGeometry(.035,12,10),gold); pom.position.y=-.14;
+      const aura=spr('90,130,255',.5); aura.position.y=.6;
+      g.add(blade,guard,grip,pom,aura); return g;
+    }
+    const sw={o:mkSword(),st:'stand',hand:null,v:V(),rk:'R',rt:0,rec:false,prevTip:V(),tipV:V()};
+    sw.o.position.set(0,1.15,-2); S.add(sw.o);
+
+    /* ---------- Arc magique ---------- */
+    const bow={on:false,draw:false,hand:'L',o:new T.Group(),R:.4,pull:0};
+    {
+      const wrap=new T.Group(), arc=new T.Mesh(new T.TorusGeometry(bow.R,.018,8,24,Math.PI),
+        new T.MeshStandardMaterial({color:0x2a1a3a,emissive:0x3a6bff,emissiveIntensity:.8,metalness:.6,roughness:.4}));
+      arc.rotation.z=-Math.PI/2; wrap.add(arc); wrap.rotation.y=Math.PI/2; wrap.position.z=bow.R; bow.o.add(wrap);
+      bow.sg=new T.BufferGeometry(); bow.sp=new Float32Array(9); bow.sg.setAttribute('position',new T.BufferAttribute(bow.sp,3));
+      bow.o.add(new T.Line(bow.sg,new T.LineBasicMaterial({color:0x9fd6ff})));
+      bow.arrow=new T.Mesh(new T.CylinderGeometry(.008,.008,.7,6).rotateX(Math.PI/2),new T.MeshBasicMaterial({color:0x66ccff}));
+      bow.arrow.add(spr('100,200,255',.35)); bow.o.add(bow.arrow); bow.o.visible=false;
+      const setString=z=>{const r=bow.R,p=bow.sp;p.set([0,r,r, 0,0,z, 0,-r,r]);bow.sg.attributes.position.needsUpdate=true;}; bow.setString=setString; setString(bow.R);
+    }
+
+    /* ---------- Particules (pool unique, additif) ---------- */
+    const NP=600, pp=new Float32Array(NP*3).fill(-99), pc=new Float32Array(NP*3), pb=new Float32Array(NP*3), pv=new Float32Array(NP*3), pl=new Float32Array(NP);
+    let pi=0; const pg=new T.BufferGeometry();
+    pg.setAttribute('position',new T.BufferAttribute(pp,3)); pg.setAttribute('color',new T.BufferAttribute(pc,3));
+    const points=new T.Points(pg,new T.PointsMaterial({size:.14,map:glowTex('255,255,255'),vertexColors:true,blending:T.AdditiveBlending,transparent:true,depthWrite:false}));
+    points.frustumCulled=false; S.add(points);
+    const _c=new T.Color();
+    function burst(p,col,n,spd=2){
+      _c.set(col);
+      for(let i=0;i<n;i++){const j=(pi++)%NP,k=j*3,a=Math.random()*6.283,b=Math.random()*2-1,r=Math.sqrt(1-b*b),s=spd*(.3+Math.random());
+        pp[k]=p.x;pp[k+1]=p.y;pp[k+2]=p.z; pv[k]=Math.cos(a)*r*s;pv[k+1]=b*s;pv[k+2]=Math.sin(a)*r*s;
+        pb[k]=_c.r;pb[k+1]=_c.g;pb[k+2]=_c.b; pl[j]=1;}
+    }
+
+    /* ---------- Ennemis : corps procéduraux (os, côtes, crâne) ---------- */
+    const G={skull:new T.SphereGeometry(.13,14,12),eye:new T.SphereGeometry(.025,8,6),spine:new T.CylinderGeometry(.035,.045,.6,8),
+      rib:new T.TorusGeometry(.13,.014,6,14),pelvis:new T.TorusGeometry(.1,.03,6,12),arm:new T.CapsuleGeometry(.03,.42,4,6),leg:new T.CapsuleGeometry(.04,.62,4,6),blob:new T.CircleGeometry(.45,16).rotateX(-Math.PI/2)};
+    const M={bone:new T.MeshStandardMaterial({color:0xcfc8b0,roughness:.75}),ghoul:new T.MeshStandardMaterial({color:0x4d6b4a,roughness:.9}),
+      ally:new T.MeshStandardMaterial({color:0x5a7cff,emissive:0x1a2fff,emissiveIntensity:.9,roughness:.5,transparent:true,opacity:.92}),
+      eS:new T.MeshBasicMaterial({color:0xffa040}),eG:new T.MeshBasicMaterial({color:0xff2a2a}),eA:new T.MeshBasicMaterial({color:0x88e8ff}),
+      blob:new T.MeshBasicMaterial({map:glowTex('0,0,0'),transparent:true,opacity:.6,depthWrite:false})};
+    function limb(geo,len,x,y,m){const p=new T.Group();p.position.set(x,y,0);const l=new T.Mesh(geo,m);l.position.y=-len/2;p.add(l);return p;}
+    function mkBody(kind,ally){
+      const m=ally?M.ally:kind==='ghoul'?M.ghoul:M.bone, eye=ally?M.eA:kind==='ghoul'?M.eG:M.eS, g=new T.Group();
+      const skull=new T.Mesh(G.skull,m); skull.position.y=1.62; g.add(skull);
+      [-.05,.05].forEach(x=>{const e=new T.Mesh(G.eye,eye);e.position.set(x,1.64,.11);g.add(e);});
+      const sp=new T.Mesh(G.spine,m); sp.position.y=1.2; g.add(sp);
+      [1.38,1.28,1.18].forEach(y=>{const r=new T.Mesh(G.rib,m);r.rotation.x=Math.PI/2;r.scale.set(1,.7,1);r.position.y=y;g.add(r);});
+      const pv_=new T.Mesh(G.pelvis,m); pv_.rotation.x=Math.PI/2; pv_.position.y=.85; g.add(pv_);
+      const a1=limb(G.arm,.45,-.22,1.45,m),a2=limb(G.arm,.45,.22,1.45,m),l1=limb(G.leg,.62,-.1,.85,m),l2=limb(G.leg,.62,.1,.85,m);
+      g.add(a1,a2,l1,l2);
+      if(kind==='ghoul'){g.scale.set(1.15,.92,1.15);a1.scale.y=a2.scale.y=1.35;}
+      const bl=new T.Mesh(G.blob,M.blob); bl.position.y=.02; g.add(bl);
+      return {g,arms:[a1,a2],legs:[l1,l2]};
+    }
+    const ST={skeleton:{hp:3,sp:1.3,dmg:8},ghoul:{hp:5,sp:2.1,dmg:12}};
+    const E=[], souls=[], arrows=[], fires=[];
+    function spawn(kind,ally,pos){
+      const b=mkBody(kind,ally),s=ST[kind]; b.g.position.copy(pos); S.add(b.g);
+      const e={o:b.g,kind,ally,hp:ally?4:s.hp,sp:s.sp*(ally?1.3:1),dmg:s.dmg,cd:1,hitCd:0,atk:0,ph:Math.random()*6,rise:1,arms:b.arms,legs:b.legs};
+      E.push(e); return e;
+    }
+
+    /* ---------- État du joueur / HUD ---------- */
+    let hp=100, flash=0, msg='', msgT=0, mode='lobby', conf=null, spawnT=0, spawned=0, lastHud='';
+    const buzz=(k,i=.5,d=60)=>{try{const c=hands[k].components['tracked-controls-webxr']||hands[k].components['tracked-controls'];
+      const gp=c.controller.gamepad; if(gp.hapticActuators&&gp.hapticActuators[0]) gp.hapticActuators[0].pulse(i,d);
+      else if(gp.vibrationActuator) gp.vibrationActuator.playEffect('dual-rumble',{duration:d,strongMagnitude:i,weakMagnitude:i});}catch(e){}};
+    const say=(s,t=3)=>{msg=s;msgT=t;};
+    function hurt(n){hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}
+
+    function clearField(){E.splice(0).forEach(e=>S.remove(e.o));souls.splice(0).forEach(s=>S.remove(s.s));arrows.splice(0).forEach(a=>S.remove(a.m));fires.splice(0).forEach(f=>S.remove(f.m));}
+    function toLobby(){clearField();cur.g.visible=false;cur=lobby;lobby.g.visible=true;mode='lobby';exitP.visible=false;rig.position.set(0,0,2.5);rig.rotation.y=0;}
+    function enterDungeon(k){clearField();conf=DUN[k];cur.g.visible=false;cur=conf.hall;cur.g.visible=true;mode='dungeon';hp=100;spawned=0;spawnT=1.5;
+      exitP.visible=false;rig.position.set(0,0,6);rig.rotation.y=0;say(conf.name,3);}
+    toLobby();
+
+    /* ---------- Épée : saisir, lâcher, rappeler ---------- */
+    const _p=V(),_q=new T.Quaternion(),head=V();
+    const wp=(o,out=V())=>o.getWorldPosition(out);
+    function holdSword(k){sw.hand=k;sw.st='held';sw.rec=false;H[k].add(sw.o);sw.o.position.set(0,0,0);sw.o.rotation.set(-Math.PI/2+.35,0,0);sw.o.visible=true;buzz(k,.7,80);}
+    function freeSword(){S.attach(sw.o);sw.st='drop';sw.v.set(0,0,0);}
+    function toggleBow(){
+      if(!bow.on){
+        const sh=sw.st==='held'?sw.hand:'R';
+        if(sw.st==='held'){sw.o.visible=false;sw.st='stowed';sw.hand=sh;}
+        bow.hand=other(sh);H[bow.hand].add(bow.o);bow.o.visible=true;bow.on=true;
+      }else{bow.on=false;bow.draw=false;bow.o.visible=false;if(sw.st==='stowed')holdSword(sw.hand);}
+    }
+    /* ---------- Boule de feu ---------- */
+    const fbG=new T.SphereGeometry(1,16,12), fbM=new T.MeshBasicMaterial({color:0xff6a1a});
+    const mkFire=()=>{const g=new T.Group();g.add(new T.Mesh(fbG,fbM),spr('255,120,30',3.4));return g;};
+    const charge={k:null,t:0,g:mkFire()};
+    function launchFire(){
+      const k=charge.k, pw=Math.min(charge.t,1.5)/1.5; H[k].remove(charge.g);
+      const m=mkFire(); wp(charge.g,m.position); m.scale.setScalar(.06+pw*.12); S.add(m);
+      const d=V(0,0,-1).applyQuaternion(H[k].getWorldQuaternion(_q)); fires.push({m,v:d.multiplyScalar(14),pw,life:3,s:.06+pw*.12}); buzz(k,.9,150); charge.k=null;
+    }
+    function explode(f){
+      burst(f.m.position,0xff7a22,120,5);burst(f.m.position,0xffd27a,60,3);
+      const r=2.2+f.pw*1.3; for(const e of E.slice()) if(!e.ally&&e.o.position.distanceTo(f.m.position)<r) dmgE(e,Math.ceil(2+f.pw*3),true);
+    }
+    /* ---------- Flèche d'énergie ---------- */
+    function shoot(){
+      const k=other(bow.hand); bow.o.updateWorldMatrix(true,false);
+      const from=bow.o.localToWorld(V(0,0,bow.R+bow.pull)), to=wp(bow.o), d=to.clone().sub(wp(H[k])).normalize();
+      const m=bow.arrow.clone(); m.visible=true; S.add(m); m.position.copy(from); m.quaternion.setFromUnitVectors(V(0,0,-1),d);
+      arrows.push({m,v:d.multiplyScalar(10+bow.pull*50),life:3}); buzz(bow.hand,.8,100);
+    }
+    /* ---------- Contrôles manettes ---------- */
+    const stick={x:0,y:0}; let snap=false;
+    hands.L.addEventListener('thumbstickmoved',e=>{stick.x=e.detail.x;stick.y=e.detail.y;});
+    hands.R.addEventListener('thumbstickmoved',e=>{const x=e.detail.x;
+      if(Math.abs(x)>.7&&!snap){snap=true;rig.rotation.y-=Math.sign(x)*Math.PI/6;}else if(Math.abs(x)<.4)snap=false;});
+    for(const k of ['L','R']){
+      const el=hands[k];
+      el.addEventListener('triggerdown',()=>{
+        if(!bow.on&&(sw.st==='stand'||sw.st==='drop')&&wp(H[k]).distanceTo(sw.o.position)<.4){holdSword(k);return;}
+        if(bow.on){if(k!==bow.hand)bow.draw=true;return;}
+        if(!(sw.st==='held'&&sw.hand===k)){charge.k=k;charge.t=0;H[k].add(charge.g);charge.g.position.set(0,0,-.15);}
+      });
+      el.addEventListener('triggerup',()=>{
+        if(bow.on){if(bow.draw&&k!==bow.hand&&bow.pull>.12)shoot();if(k!==bow.hand){bow.draw=false;bow.pull=0;bow.setString(bow.R);bow.arrow.visible=false;}return;}
+        if(charge.k===k)launchFire();
+      });
+      el.addEventListener('gripdown',()=>{
+        if(sw.st==='held'&&sw.hand===k)freeSword();
+        else if(!bow.on&&(sw.st==='stand'||sw.st==='drop')){sw.rk=k;sw.rt=0;sw.rec=true;}
+      });
+      el.addEventListener('gripup',()=>{if(sw.rec&&sw.st!=='recall'&&sw.rk===k)sw.rec=false;});
+      ['abuttondown','xbuttondown'].forEach(n=>el.addEventListener(n,()=>summon()));
+      ['bbuttondown','ybuttondown'].forEach(n=>el.addEventListener(n,toggleBow));
+    }
+
+    /* ---------- Dégâts, mort, ombres ---------- */
+    function dmgE(e,n,aoe){
+      e.hp-=n; burst(V(e.o.position.x,1.2,e.o.position.z),e.ally?0x6a8cff:e.kind==='ghoul'?0x66ff88:0xe8e0c8,aoe?8:18,2.5);
+      if(e.hp<=0){S.remove(e.o);E.splice(E.indexOf(e),1);
+        if(!e.ally){const s=spr('160,100,255',.8);s.position.set(e.o.position.x,.6,e.o.position.z);S.add(s);souls.push({k:e.kind,s,t:15});say('Une ombre s\'élève… (X/A ou plantez l\'épée)',2.5);}}
+    }
+    function summon(s){
+      if(!s){let d=5;head.y=0;for(const o of souls){const dd=Math.hypot(o.s.position.x-head.x,o.s.position.z-head.z);if(dd<d){d=dd;s=o;}}}
+      if(!s)return; if(E.filter(e=>e.ally).length>=4){say('Armée d\'ombres au maximum',2);return;}
+      souls.splice(souls.indexOf(s),1); S.remove(s.s);
+      burst(s.s.position,0x7a5cff,90,3);burst(s.s.position,0x4aa8ff,60,2); spawn(s.k,true,V(s.s.position.x,0,s.s.position.z));
+      say('Levez-vous.',2); buzz('R',.9,200);buzz('L',.9,200);
+    }
+    const segDist=(p,e)=>{const o=e.o.position,y=Math.min(Math.max(p.y,.1),1.7);return Math.hypot(p.x-o.x,p.y-y,p.z-o.z);};
+
+    this.ready=true;
+    /* =========================================================
+       BOUCLE PRINCIPALE
+       ========================================================= */
+    const fwd=V(),tip=V(),mid=V(),tmp=V(),clock={t:0};
+    this.loop=(t,dt)=>{
+      cam.getWorldPosition(head);
+      /* -- Déplacement (stick gauche) -- */
+      if(Math.hypot(stick.x,stick.y)>.15){
+        cam.getWorldDirection(fwd);fwd.y=0;fwd.normalize();
+        rig.position.x+=(fwd.x*-stick.y+-fwd.z*stick.x)*2.5*dt; rig.position.z+=(fwd.z*-stick.y+fwd.x*stick.x)*2.5*dt;
+      }
+      const lim=cur.R-1.5,rr=Math.hypot(rig.position.x,rig.position.z); if(rr>lim){rig.position.x*=lim/rr;rig.position.z*=lim/rr;}
+
+      /* -- Portails -- */
+      portals.forEach(p=>{p.g.userData.disc.rotation.z+=dt;});exitP.userData.disc.rotation.z+=dt;
+      if(mode==='lobby'){for(const p of portals)if(Math.hypot(head.x-p.pos.x,head.z-p.pos.z)<.8){enterDungeon(p.k);break;}}
+      else if(exitP.visible&&Math.hypot(head.x-exitP.position.x,head.z-exitP.position.z)<.8){toLobby();say('Donjon terminé !',3);}
+
+      /* -- Épée : états -- */
+      if(sw.st==='stand'){sw.o.position.y=1.15+Math.sin(t*.0015)*.03;sw.o.rotation.y+=dt*.4;}
+      else if(sw.st==='drop'){sw.v.y-=9.8*dt;sw.o.position.addScaledVector(sw.v,dt);
+        if(sw.o.position.y<.05){sw.o.position.y=.05;sw.v.set(0,0,0);sw.o.rotation.set(0,0,Math.PI/2);}}
+      if(sw.rec&&sw.st!=='recall'&&(sw.st==='stand'||sw.st==='drop')){sw.rt+=dt;if(sw.rt>.35){sw.st='recall';sw.v.set(0,0,0);say('Rappel !',1);}}
+      if(sw.st==='recall'){
+        const target=wp(H[sw.rk]).add(V(0,.05,0)), d=target.clone().sub(sw.o.position), dist=d.length();d.normalize();
+        sw.v.addScaledVector(d,70*dt); if(sw.v.length()>20)sw.v.setLength(20);
+        sw.o.position.addScaledVector(sw.v,dt); sw.o.quaternion.setFromUnitVectors(V(0,1,0),sw.v.clone().normalize());
+        burst(sw.o.position,0x6a8cff,2,.5);
+        if(dist<.3){holdSword(sw.rk);burst(sw.o.position,0x9fd6ff,30,2);}
+      }
+      /* -- Frappes d'épée (tenue ou en vol) -- */
+      if(sw.st==='held'||sw.st==='recall'){
+        sw.o.updateWorldMatrix(true,false); tip.set(0,1,0).applyMatrix4(sw.o.matrixWorld); mid.set(0,.55,0).applyMatrix4(sw.o.matrixWorld);
+        sw.tipV.copy(tip).sub(sw.prevTip).divideScalar(dt); const spd=sw.tipV.length(); sw.prevTip.copy(tip);
+        if(spd>2.2&&spd<80) for(const e of E.slice()){ if(e.ally||e.hitCd>0||e.rise>0)continue;
+          if(segDist(tip,e)<.55||segDist(mid,e)<.55){e.hitCd=.35;dmgE(e,spd>4.5?2:1);burst(tip,0xffffff,14,3);if(sw.hand)buzz(sw.hand,1,80);}}
+        /* Geste d'ombre : planter l'épée au sol près d'une âme */
+        if(sw.st==='held'&&tip.y<.2&&sw.tipV.y<-1.2)for(const s of souls)if(Math.hypot(s.s.position.x-tip.x,s.s.position.z-tip.z)<1.6){summon(s);break;}
+      }
+
+      /* -- Arc : tension de la corde -- */
+      if(bow.on&&bow.draw){
+        const k=other(bow.hand); bow.o.updateWorldMatrix(true,false);
+        const l=bow.o.worldToLocal(wp(H[k])); bow.pull=Math.min(Math.max(l.z-bow.R,0),.65);
+        bow.setString(bow.R+bow.pull); bow.arrow.visible=bow.pull>.03; bow.arrow.position.set(0,0,bow.R+bow.pull-.35);
+        if(bow.pull>.05)buzz(k,bow.pull*.4,30);
+      }
+      /* -- Charge de boule de feu -- */
+      if(charge.k){charge.t+=dt;const s=.04+Math.min(charge.t,1.5)*.08;charge.g.scale.setScalar(s*(1+.1*Math.sin(t*.05)));buzz(charge.k,.2+charge.t*.2,30);
+        if(Math.random()<.5)burst(wp(charge.g,tmp),0xff8a30,1,.8);}
+
+      /* -- Projectiles -- */
+      for(let i=arrows.length-1;i>=0;i--){const a=arrows[i];a.v.y-=3*dt;a.m.position.addScaledVector(a.v,dt);a.m.quaternion.setFromUnitVectors(V(0,0,-1),tmp.copy(a.v).normalize());a.life-=dt;
+        burst(a.m.position,0x66ccff,1,.3);let hit=a.life<=0||a.m.position.y<0;
+        for(const e of E.slice())if(!e.ally&&e.rise<=0&&segDist(a.m.position,e)<.5){dmgE(e,2);hit=true;burst(a.m.position,0x9fd6ff,20,3);break;}
+        if(hit){S.remove(a.m);arrows.splice(i,1);}}
+      for(let i=fires.length-1;i>=0;i--){const f=fires[i];f.m.position.addScaledVector(f.v,dt);f.life-=dt;burst(f.m.position,0xff6a1a,2,.8);
+        let hit=f.life<=0||f.m.position.y<.1;
+        for(const e of E)if(!e.ally&&e.rise<=0&&segDist(f.m.position,e)<.6+f.s){hit=true;break;}
+        if(hit){explode(f);S.remove(f.m);fires.splice(i,1);}}
+
+      /* -- Vagues d'ennemis -- */
+      if(mode==='dungeon'){
+        const hostiles=E.filter(e=>!e.ally).length; spawnT-=dt;
+        if(spawned<conf.n&&spawnT<=0&&hostiles<5){const a=Math.random()*6.283,kd=conf.kinds[spawned%conf.kinds.length];
+          spawn(kd,false,V(Math.sin(a)*(cur.R-1.8),0,Math.cos(a)*(cur.R-1.8)));spawned++;spawnT=2.2;}
+        if(spawned>=conf.n&&hostiles===0&&!exitP.visible){exitP.visible=true;say('Donjon nettoyé ! Le portail est ouvert.',4);}
+      }
+      /* -- IA ennemis / ombres alliées -- */
+      for(const e of E.slice()){
+        const o=e.o,P=o.position;e.hitCd-=dt;e.cd-=dt;
+        if(e.rise>0){e.rise-=dt;P.y=-1.8*Math.max(e.rise,0);continue;}
+        const cand=e.ally?E.filter(f=>!f.ally):[{pl:1,o:{position:head}},...E.filter(f=>f.ally)];
+        let ob=null,d=1e9;for(const c of cand){const dd=Math.hypot(c.o.position.x-P.x,c.o.position.z-P.z);if(dd<d){d=dd;ob=c;}}
+        let fol=false;if(!ob){fol=true;ob={pl:1,o:{position:head}};d=Math.hypot(head.x-P.x,head.z-P.z);}
+        const dx=ob.o.position.x-P.x,dz=ob.o.position.z-P.z;o.rotation.y=Math.atan2(dx,dz);
+        const stop=fol?2.4:1.0;
+        if(d>stop){P.x+=dx/d*e.sp*dt;P.z+=dz/d*e.sp*dt;e.ph+=dt*e.sp*5;}
+        if(!fol&&d<1.2&&e.cd<=0){e.cd=1.3;e.atk=.35;if(ob.pl)hurt(e.dmg);else dmgE(ob,1);}
+        e.atk=Math.max(e.atk-dt,0);
+        const sw_=Math.sin(e.ph)*.6;e.legs[0].rotation.x=sw_;e.legs[1].rotation.x=-sw_;
+        e.arms[0].rotation.x=e.atk>0?-1.8:-sw_;e.arms[1].rotation.x=e.atk>0?-1.8:sw_;
+        if(e.kind==='ghoul'){e.arms[0].rotation.x-=.5;e.arms[1].rotation.x-=.5;}
+      }
+      for(let i=souls.length-1;i>=0;i--){const s=souls[i];s.t-=dt;s.s.position.y=.6+Math.sin(t*.004+i)*.1;if(Math.random()<.2)burst(s.s.position,0x8a5cff,1,.5);
+        if(s.t<=0){S.remove(s.s);souls.splice(i,1);}}
+
+      /* -- Particules -- */
+      for(let j=0;j<NP;j++){const k=j*3;if(pl[j]>0){pl[j]-=dt*1.1;pp[k]+=pv[k]*dt;pp[k+1]+=pv[k+1]*dt;pp[k+2]+=pv[k+2]*dt;
+        const l=Math.max(pl[j],0);pc[k]=pb[k]*l;pc[k+1]=pb[k+1]*l;pc[k+2]=pb[k+2]*l;}else pp[k+1]=-99;}
+      pg.attributes.position.needsUpdate=pg.attributes.color.needsUpdate=true;
+
+      /* -- Torches vacillantes (seulement la salle active) -- */
+      for(const q of cur.torches){const f=.8+.2*Math.sin(t*.013+q.i*7)+.1*Math.sin(t*.037+q.i*3);q.li.intensity=1.5*f;q.flame.scale.set(1.1*(.9+.1*f),1.1*f,1);}
+
+      /* -- HUD (rafraîchi uniquement s'il change) -- */
+      flash=Math.max(flash-dt,0);msgT-=dt;
+      const txt=`PV ${Math.max(hp,0)|0}   Ombres ${E.filter(e=>e.ally).length}${mode==='dungeon'?`   Ennemis ${E.filter(e=>!e.ally).length+conf.n-spawned}`:''}${msgT>0?'\n'+msg:''}`;
+      if(txt!==lastHud+flash){lastHud=txt;hud.setAttribute('text',{value:txt,color:flash>0?'#ff5a5a':'#cfe3ff'});}
+    };
+  }
+});
+</script>
+</body>
+</html>
