@@ -13,7 +13,7 @@
     padding:2rem;text-align:center;color:#d6dcff;
     background:radial-gradient(ellipse at 50% 35%,#20123f 0%,#07050f 60%,#000 100%)}
   #intro h1{margin:0;font-weight:400;font-size:clamp(2.2rem,7vw,5rem);letter-spacing:.12em;text-shadow:0 0 40px #6a4cff}
-  #intro p{max-width:38rem;line-height:1.6;opacity:.75;margin:1.2rem 0 0}
+  #intro p{max-width:38rem;line-height:1.6;opaciAty:.75;margin:1.2Arem 0 0}
   #go,#pcb{margin:2.2rem .4rem 0;padding:1.1rem 2.4rem;font:inherit;font-size:1.4rem;letter-spacing:.08em;color:#fff;cursor:pointer;
     background:linear-gradient(135deg,#3b22b8,#8a3df0);border:2px solid #b9a4ff;border-radius:60px;box-shadow:0 0 45px #7a4cff}
   #go:hover,#go:focus-visible,#pcb:hover{box-shadow:0 0 70px #a77cff;outline:none}
@@ -63,24 +63,46 @@ document.getElementById('go').onclick = ()=>{ window.gameAudio&&window.gameAudio
 scEl.addEventListener('enter-vr',()=>{intro.style.display='none';window.gameAudio&&window.gameAudio();});
 scEl.addEventListener('exit-vr',()=>intro.style.display='flex');
 document.getElementById('pcb').onclick = ()=>{ const f=()=>window.gamePC?window.gamePC():setTimeout(f,300); f(); };
-/* Lobby multijoueur : WebRTC pair-à-pair via PeerJS (pas de serveur à héberger) */
+/* Lobby multijoueur : WebRTC pair-à-pair via PeerJS (pas de serveur de jeu à héberger) */
 (()=>{
-  const mps=document.getElementById('mps'), st=t=>mps.textContent=t; let peer;
-  const attach=(c,role)=>{ st(role==='host'?'✔ Ami connecté — vous êtes l\'hôte. Lancez VR ou PC !':'✔ Connecté au lobby de l\'hôte. Lancez VR ou PC !');
-    const f=()=>window.gameNet?window.gameNet(c,role):setTimeout(f,300); f(); c.on('close',()=>st('Déconnecté.')); };
-  document.getElementById('host').onclick=()=>{
+  const mps=document.getElementById('mps'), st=t=>mps.textContent=t; let peer,tmo,linked=false;
+  /* Relais TURN : sans lui, la connexion échoue souvent entre deux réseaux différents (box ↔ 4G, Quest ↔ PC...).
+     Pour un relais fiable : compte gratuit sur metered.ca (Open Relay) -> collez votre clé API ci-dessous. */
+  const TURN_KEY='';
+  const BASE=[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302','stun:global.stun.twilio.com:3478']},
+    {urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turn:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}];
+  let iceP;
+  const getIce=()=>iceP||(iceP=(TURN_KEY?fetch('https://openrelayproject.metered.ca/api/v1/turn/credentials?apiKey='+TURN_KEY).then(r=>r.json()).then(a=>Array.isArray(a)?a.concat(BASE.slice(0,1)):BASE):Promise.resolve(BASE)).catch(()=>BASE));
+  const opts=ice=>({debug:1,config:{iceServers:ice,iceCandidatePoolSize:4}});
+  const ERR={'peer-unavailable':'Code introuvable : vérifiez le code, et que l\'hôte a créé son lobby et garde sa page ouverte.',
+    'network':'Serveur de connexion injoignable.','server-error':'Serveur de connexion indisponible.','socket-error':'Connexion au serveur coupée.',
+    'socket-closed':'Connexion au serveur coupée.','webrtc':'Liaison directe impossible (réseau/pare-feu).','browser-incompatible':'Navigateur incompatible WebRTC.'};
+  const fail=e=>st((ERR[e&&e.type]||'Erreur : '+((e&&e.type)||e))+' (recliquez pour réessayer)');
+  const attach=(c,role)=>{ if(c._done)return; c._done=true; linked=true; clearTimeout(tmo);
+    st(role==='host'?'✔ Ami connecté — vous êtes l\'hôte. Lancez VR ou PC !':'✔ Connecté au lobby de l\'hôte. Lancez VR ou PC !');
+    const f=()=>window.gameNet?window.gameNet(c,role):setTimeout(f,200); f();
+    c.on('close',()=>st('Déconnecté.')); c.on('error',e=>st('Erreur de liaison : '+((e&&e.type)||e))); };
+  const hostBtn=document.getElementById('host');
+  hostBtn.onclick=async()=>{
     if(!window.Peer)return st('PeerJS non chargé (connexion internet ?)');
-    const code=Math.random().toString(36).slice(2,7).toUpperCase(); if(peer)peer.destroy(); peer=new Peer('mdo-'+code);
-    peer.on('open',()=>st('Code du lobby : '+code+' — en attente de votre ami…'));
-    peer.on('connection',c=>c.on('open',()=>attach(c,'host')));
-    peer.on('error',e=>st('Erreur : '+e.type+' (recliquez pour réessayer)'));
+    linked=false; clearTimeout(tmo); st('Création du lobby…');
+    const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let code=''; for(let i=0;i<5;i++)code+=A[Math.random()*A.length|0];
+    const ice=await getIce(); if(peer)peer.destroy();
+    const p=peer=new Peer('mdo-'+code,opts(ice));
+    p.on('open',()=>st('Code du lobby : '+code+' — en attente de votre ami… (gardez cette page ouverte)'));
+    p.on('connection',c=>{const go=()=>attach(c,'host'); c.open?go():c.on('open',go);});
+    p.on('disconnected',()=>{if(!p.destroyed)try{p.reconnect();}catch(e){}});   // le serveur de signalisation coupe parfois : on se reconnecte
+    p.on('error',e=>e.type==='unavailable-id'?hostBtn.onclick():fail(e));
   };
-  document.getElementById('join').onclick=()=>{
+  document.getElementById('join').onclick=async()=>{
     if(!window.Peer)return st('PeerJS non chargé (connexion internet ?)');
-    const code=document.getElementById('code').value.trim().toUpperCase(); if(code.length<3)return st('Entrez le code de l\'hôte.');
-    if(peer)peer.destroy(); peer=new Peer(); st('Connexion…');
-    peer.on('open',()=>{const c=peer.connect('mdo-'+code,{reliable:true});c.on('open',()=>attach(c,'guest'));});
-    peer.on('error',e=>st('Erreur : '+e.type));
+    const code=document.getElementById('code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,''); if(code.length<3)return st('Entrez le code de l\'hôte.');
+    linked=false; clearTimeout(tmo); st('Connexion…');
+    const ice=await getIce(); if(peer)peer.destroy();
+    const p=peer=new Peer(undefined,opts(ice));
+    tmo=setTimeout(()=>{if(!linked)st('Délai dépassé : connexion impossible. Vérifiez le code, ou essayez un autre réseau (Wi‑Fi ↔ 4G).');},20000);
+    p.on('open',()=>{const c=p.connect('mdo-'+code,{reliable:true,serialization:'json'}); c.on('open',()=>attach(c,'guest')); c.on('error',fail);});
+    p.on('error',e=>{clearTimeout(tmo);fail(e);});
   };
 })();
 
@@ -414,7 +436,7 @@ AFRAME.registerComponent('game',{
     /* ---------- Donjons procéduraux : salles, couloirs, boucles, portes secrètes ---------- */
     const CELL=2.6, WH=3.4, DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
     let rand=Math.random;const mulb=a=>()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
-    let D=null, dist=null, dist2=null, flowT=0, remain=0, power=1;
+    let D=null, dist=null, dist2=null, flowT=0, remain=0, power=1, curDun=null;
     const cellOf=(x,z)=>[Math.floor(x/CELL),Math.floor(z/CELL)];
     const cw=(i,j)=>V((i+.5)*CELL,0,(j+.5)*CELL);
     const solidC=(i,j)=>{const c=D.g[j]&&D.g[j][i];return c===undefined||c==='#'||c==='D';};
@@ -499,10 +521,10 @@ AFRAME.registerComponent('game',{
       return {g,W,H:Hh,dg,torches,tl,lan,doors,chests,spawns,obs,tflow:0,st:cw(first.cx,first.cy),ex:cw(last.cx,last.cy)};
     }
     function disposeD(){S.remove(D.dg);D.dg.traverse(o=>{if(o.geometry)o.geometry.dispose();});D=null;}
-    function toLobby(fromNet){if(!fromNet)net.send({t:'lobby'});clearField();if(D)disposeD();lobby.g.visible=true;mode='lobby';exitP.visible=false;dist=dist2=null;
+    function toLobby(fromNet){if(!fromNet)net.send({t:'lobby'});curDun=null;clearField();if(D)disposeD();lobby.g.visible=true;mode='lobby';exitP.visible=false;dist=dist2=null;
       rig.position.set(net.role==='guest'?-1:0,0,2.5);rig.rotation.y=0;if(S.fog)S.fog.density=.05;}
     function enterDungeon(k,seed,fromNet){
-      if(seed===undefined)seed=Math.random()*1e9|0;if(!fromNet)net.send({t:'enter',k,seed});
+      if(seed===undefined)seed=Math.random()*1e9|0;curDun={k,seed};if(!fromNet)net.send({t:'enter',k,seed});
       clearField();if(D)disposeD();conf=DUN[k];rand=mulb(seed);let n=0;do{D=genDungeon(conf);}while(!D&&++n<20);rand=Math.random;
       lobby.g.visible=false;mode='dungeon';hp=100;power=1;dist=null;flowT=0;remain=conf.n;
       rig.position.set(D.st.x+(net.role==='guest'?.7:0),0,D.st.z);rig.rotation.y=Math.atan2(-(D.ex.x-D.st.x),-(D.ex.z-D.st.z));
@@ -697,9 +719,10 @@ AFRAME.registerComponent('game',{
       case'dmg':{const e=E.find(e=>e.id===m.id&&!e.proxy);if(e)dmgE(e,m.n,m.aoe,m.f&&V(m.f[0],m.f[1],m.f[2]));break;}
       case'hurt':hurt(m.n);break;
       case'fx':burst(V(m.x,m.y,m.z),0xff7a22,80,4);snd('boom',V(m.x,m.y,m.z));break;}}
-    window.gameNet=(c,role)=>{net.c=c;net.role=role;c.on('data',onNet);
+    window.gameNet=(c,role)=>{net.c=c;net.role=role;c.on('data',m=>{try{onNet(m);}catch(e){console.error('net',e);}});
       c.on('close',()=>{net.c=null;net.role=null;remote.on=false;remote.t=null;rav.g.visible=false;dist2=null;say('Coéquipier déconnecté',4);if(mode==='dungeon')toLobby(true);});
-      if(role==='guest'&&mode==='lobby')rig.position.x=-1;say('Coéquipier connecté !',4);};
+      if(role==='guest'&&mode==='lobby')rig.position.x=-1;say('Coéquipier connecté !',4);
+      if(role==='host'&&mode==='dungeon'&&curDun)net.send({t:'enter',k:curDun.k,seed:curDun.seed});};   // ami arrivé après l'hôte : on lui envoie le donjon en cours
 
     /* =========================================================
        MODE PC : souris/clavier. Mains virtuelles attachées à la caméra, le reste du jeu est inchangé.
