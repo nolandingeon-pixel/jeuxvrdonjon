@@ -13,7 +13,7 @@
     padding:2rem;text-align:center;color:#d6dcff;
     background:radial-gradient(ellipse at 50% 35%,#20123f 0%,#07050f 60%,#000 100%)}
   #intro h1{margin:0;font-weight:400;font-size:clamp(2.2rem,7vw,5rem);letter-spacing:.12em;text-shadow:0 0 40px #6a4cff}
-  #intro p{max-width:38rem;line-height:1.6;opaciAty:.75;margin:1.2Arem 0 0}
+  #intro p{max-width:38rem;line-height:1.6;opacity:.75;margin:1.2rem 0 0}
   #go,#pcb{margin:2.2rem .4rem 0;padding:1.1rem 2.4rem;font:inherit;font-size:1.4rem;letter-spacing:.08em;color:#fff;cursor:pointer;
     background:linear-gradient(135deg,#3b22b8,#8a3df0);border:2px solid #b9a4ff;border-radius:60px;box-shadow:0 0 45px #7a4cff}
   #go:hover,#go:focus-visible,#pcb:hover{box-shadow:0 0 70px #a77cff;outline:none}
@@ -65,7 +65,7 @@ scEl.addEventListener('exit-vr',()=>intro.style.display='flex');
 document.getElementById('pcb').onclick = ()=>{ const f=()=>window.gamePC?window.gamePC():setTimeout(f,300); f(); };
 /* Lobby multijoueur : WebRTC pair-à-pair via PeerJS (pas de serveur de jeu à héberger) */
 (()=>{
-  const mps=document.getElementById('mps'), st=t=>mps.textContent=t; let peer,tmo,linked=false;
+  const mps=document.getElementById('mps'), st=t=>mps.textContent=t; let peer,tmo,linked=false,cur=null;
   /* Relais TURN : sans lui, la connexion échoue souvent entre deux réseaux différents (box ↔ 4G, Quest ↔ PC...).
      Pour un relais fiable : compte gratuit sur metered.ca (Open Relay) -> collez votre clé API ci-dessous. */
   const TURN_KEY='';
@@ -78,10 +78,10 @@ document.getElementById('pcb').onclick = ()=>{ const f=()=>window.gamePC?window.
     'network':'Serveur de connexion injoignable.','server-error':'Serveur de connexion indisponible.','socket-error':'Connexion au serveur coupée.',
     'socket-closed':'Connexion au serveur coupée.','webrtc':'Liaison directe impossible (réseau/pare-feu).','browser-incompatible':'Navigateur incompatible WebRTC.'};
   const fail=e=>st((ERR[e&&e.type]||'Erreur : '+((e&&e.type)||e))+' (recliquez pour réessayer)');
-  const attach=(c,role)=>{ if(c._done)return; c._done=true; linked=true; clearTimeout(tmo);
+  const attach=(c,role)=>{ if(c._done)return; c._done=true; linked=true; cur=c; clearTimeout(tmo);
     st(role==='host'?'✔ Ami connecté — vous êtes l\'hôte. Lancez VR ou PC !':'✔ Connecté au lobby de l\'hôte. Lancez VR ou PC !');
     const f=()=>window.gameNet?window.gameNet(c,role):setTimeout(f,200); f();
-    c.on('close',()=>st('Déconnecté.')); c.on('error',e=>st('Erreur de liaison : '+((e&&e.type)||e))); };
+    c.on('close',()=>{if(cur===c){cur=null;linked=false;}st(role==='host'?'Ami déconnecté — il peut rejoindre avec le même code.':'Déconnecté.');}); c.on('error',e=>st('Erreur de liaison : '+((e&&e.type)||e))); };
   const hostBtn=document.getElementById('host');
   hostBtn.onclick=async()=>{
     if(!window.Peer)return st('PeerJS non chargé (connexion internet ?)');
@@ -90,20 +90,21 @@ document.getElementById('pcb').onclick = ()=>{ const f=()=>window.gamePC?window.
     const ice=await getIce(); if(peer)peer.destroy();
     const p=peer=new Peer('mdo-'+code,opts(ice));
     p.on('open',()=>st('Code du lobby : '+code+' — en attente de votre ami… (gardez cette page ouverte)'));
-    p.on('connection',c=>{const go=()=>attach(c,'host'); c.open?go():c.on('open',go);});
+    p.on('connection',c=>{if(cur&&cur.open){c.on('open',()=>c.close());return;}const go=()=>attach(c,'host'); c.open?go():c.on('open',go);});
     p.on('disconnected',()=>{if(!p.destroyed)try{p.reconnect();}catch(e){}});   // le serveur de signalisation coupe parfois : on se reconnecte
     p.on('error',e=>e.type==='unavailable-id'?hostBtn.onclick():fail(e));
   };
-  document.getElementById('join').onclick=async()=>{
+  const join=async n=>{
     if(!window.Peer)return st('PeerJS non chargé (connexion internet ?)');
     const code=document.getElementById('code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g,''); if(code.length<3)return st('Entrez le code de l\'hôte.');
-    linked=false; clearTimeout(tmo); st('Connexion…');
+    linked=false; clearTimeout(tmo); st(n?'Nouvelle tentative ('+(n+1)+'/3)…':'Connexion…');
     const ice=await getIce(); if(peer)peer.destroy();
     const p=peer=new Peer(undefined,opts(ice));
-    tmo=setTimeout(()=>{if(!linked)st('Délai dépassé : connexion impossible. Vérifiez le code, ou essayez un autre réseau (Wi‑Fi ↔ 4G).');},20000);
+    tmo=setTimeout(()=>{if(linked)return;if(n<2){try{p.destroy();}catch(e){}join(n+1);}else st('Délai dépassé : connexion impossible. Vérifiez le code et que l\'hôte a créé son lobby, ou essayez un autre réseau (Wi‑Fi ↔ 4G).');},13000);
     p.on('open',()=>{const c=p.connect('mdo-'+code,{reliable:true,serialization:'json'}); c.on('open',()=>attach(c,'guest')); c.on('error',fail);});
-    p.on('error',e=>{clearTimeout(tmo);fail(e);});
+    p.on('error',e=>{if((e&&e.type==='peer-unavailable')||n>=2){clearTimeout(tmo);fail(e);}});
   };
+  document.getElementById('join').onclick=()=>join(0);
 })();
 
 /* =========================================================
@@ -430,7 +431,7 @@ AFRAME.registerComponent('game',{
       const gp=c.controller.gamepad; if(gp.hapticActuators&&gp.hapticActuators[0]) gp.hapticActuators[0].pulse(i,d);
       else if(gp.vibrationActuator) gp.vibrationActuator.playEffect('dual-rumble',{duration:d,strongMagnitude:i,weakMagnitude:i});}catch(e){}};
     const say=(s,t=3)=>{msg=s;msgT=t;};
-    function hurt(n){snd('hurt');hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}
+    function hurt(n){snd('hurt');hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;if(net.c&&mode==='dungeon'&&D){rig.position.set(D.st.x+(net.role==='guest'?.7:0),0,D.st.z);say('Vous êtes tombé… réapparition au départ',4);}else{toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}}
 
     function clearField(){PX={};held.L=held.R=null;GR.forEach(g=>g.held=null);GR.splice(0,GR.length,...GR.filter(g=>g.lobby));corpses.splice(0).forEach(c=>S.remove(c.e.o));E.splice(0).forEach(e=>S.remove(e.o));souls.splice(0).forEach(s=>S.remove(s.s));arrows.splice(0).forEach(a=>S.remove(a.m));fires.splice(0).forEach(f=>S.remove(f.m));}
     /* ---------- Donjons procéduraux : salles, couloirs, boucles, portes secrètes ---------- */
@@ -629,16 +630,22 @@ AFRAME.registerComponent('game',{
         g=new T.Group(),B=(w,h,d,m)=>new T.Mesh(new T.BoxGeometry(w,h,d),m),seg=m=>new T.Mesh(new T.CylinderGeometry(.04,.04,1,8),m),
         tor=new T.Mesh(new T.CapsuleGeometry(.15,.36,4,10),cloth),chest=new T.Mesh(new T.CapsuleGeometry(.17,.14,4,10),steel),
         belt=new T.Mesh(new T.TorusGeometry(.15,.025,6,14),lea),legs=[seg(cloth),seg(cloth)],boots=[B(.1,.1,.22,steel),B(.1,.1,.22,steel)],
-        arms=[[seg(cloth),seg(steel)],[seg(cloth),seg(steel)]],pauld=[0,1].map(()=>new T.Mesh(new T.SphereGeometry(.09,10,8),steel));
+        tp=(rt,rb,m)=>new T.Mesh(new T.CylinderGeometry(rt,rb,1,10),m),arms=[[tp(.04,.054,cloth),tp(.03,.043,steel)],[tp(.04,.054,cloth),tp(.03,.043,steel)]],elb=[0,1].map(()=>new T.Mesh(new T.SphereGeometry(.046,10,8),steel)),pauld=[0,1].map(()=>new T.Mesh(new T.SphereGeometry(.11,10,8),steel));
       belt.rotation.x=Math.PI/2;chest.scale.set(1.05,1,.8);legs.forEach(l=>{l.scale.x=l.scale.z=1.6;});
-      const mkHand=sd=>{const h=new T.Group(),fg=[];h.add(B(.085,.03,.08,lea));
-        for(let i=0;i<4;i++){const p1=new T.Group();p1.position.set(-.03+i*.02,0,-.04);const s1=B(.017,.017,.04,lea);s1.position.z=-.02;p1.add(s1);
-          const p2=new T.Group();p2.position.z=-.04;const s2=B(.015,.015,.032,lea);s2.position.z=-.016;p2.add(s2);p1.add(p2);h.add(p1);fg.push([p1,p2]);}
-        const th=new T.Group();th.position.set(.045*sd,0,-.01);const tm=B(.017,.017,.045,lea);tm.position.z=-.022;th.add(tm);h.add(th);
+      const mkHand=sd=>{const h=new T.Group(),fg=[],sk=M(0x3b2d24,0,.75,0),
+        ph=(len,r)=>{const m=new T.Mesh(new T.CapsuleGeometry(r,len,2,6),sk);m.rotation.x=Math.PI/2;m.position.z=-len/2;return m;};
+        h.add(B(.088,.026,.082,sk));const kp=B(.088,.014,.02,steel);kp.position.set(0,.017,-.032);h.add(kp);
+        const LL=[[.036,.024,.018],[.04,.027,.019],[.037,.025,.018],[.029,.02,.016]],XX=[.03,.01,-.01,-.03];
+        for(let i=0;i<4;i++){const j1=new T.Group(),j2=new T.Group(),j3=new T.Group();j1.position.set(XX[i]*sd,0,-.04);
+          j1.add(ph(LL[i][0],.0085));j2.position.z=-LL[i][0];j2.add(ph(LL[i][1],.0078));j3.position.z=-LL[i][1];j3.add(ph(LL[i][2],.007));
+          j2.add(j3);j1.add(j2);h.add(j1);fg.push([j1,j2,j3]);}
+        const t1=new T.Group(),t2=new T.Group();t1.position.set(.046*sd,-.002,-.005);t1.add(ph(.034,.0095));t2.position.z=-.034;t2.add(ph(.028,.0085));t1.add(t2);h.add(t1);
         const cuff=new T.Mesh(new T.CylinderGeometry(.04,.045,.06,10).rotateX(Math.PI/2),steel);cuff.position.z=.06;h.add(cuff);
-        h.u={fg,th,sd,c:.15};return h;},hand=[mkHand(-1),mkHand(1)];
-      const setC=(h,c)=>{h.u.c=c;h.u.fg.forEach(([a,b])=>{a.rotation.x=-c*1.35;b.rotation.x=-c*1.5;});h.u.th.rotation.y=h.u.sd*c*.9;};
-      g.add(tor,chest,belt,...legs,...boots,...arms[0],...arms[1],...pauld,...hand);S.add(g);
+        h.u={fg,th:[t1,t2],sd,c:[.1,.1,.1,.1]};return h;},hand=[mkHand(-1),mkHand(1)];
+      const setC=(h,a)=>{const u=h.u,sd=u.sd;for(let k=0;k<4;k++)u.c[k]+=(a[k]-u.c[k])*.4;const c=u.c;   // a = [pouce, index, majeur, annulaire/auriculaire]
+        u.fg.forEach(([a1,a2,a3],i)=>{const v=c[i<1?1:i<2?2:3];a1.rotation.x=-v*1.35;a2.rotation.x=-v*1.7;a3.rotation.x=-v*1.1;a1.rotation.y=sd*(i-1.5)*.025*(1-v);});
+        u.th[0].rotation.set(-c[0]*.5,sd*(-.5+c[0]*.95),0);u.th[1].rotation.x=-c[0]*.9;};
+      g.add(tor,chest,belt,...legs,...boots,...arms[0],...arms[1],...elb,...pauld,...hand);S.add(g);
       let head=null,sword=null,cur=-1,yaw=0;
       if(!self){head=new T.Group();const vz=B(.2,.04,.02,new T.MeshBasicMaterial({color:col})),pl=new T.Mesh(new T.ConeGeometry(.04,.22,8),M(col,0,.6,.8));
         vz.position.set(0,.0,-.125);pl.position.set(0,.17,.05);pl.rotation.x=.5;
@@ -654,8 +661,8 @@ AFRAME.registerComponent('game',{
         ['1H_Sword','2H_Sword','1H_Sword_Offhand','Badge_Shield','Rectangle_Shield','Round_Shield','Spike_Shield'].concat(self?['Knight_Head','Knight_Helmet']:[]).forEach(n=>{const x=o.getObjectByName(n);if(x)x.visible=false;});
         const mx=new T.AnimationMixer(o),ac={};gl.animations.forEach(c=>ac[c.name]=mx.clipAction(c));
         if(ac.Idle)ac.Idle.play();if(ac.Running_A){ac.Running_A.play();ac.Running_A.setEffectiveWeight(0);}
-        g.add(o);[tor,chest,belt,...legs,...boots,...arms[0],...arms[1],...pauld].forEach(m=>m.visible=false);
-        hand.forEach(h=>h.children.forEach(c=>{if(c!==sword)c.visible=false;}));if(head)head.children.forEach(c=>{if(!c.isSprite)c.visible=false;});
+        g.add(o);[tor,chest,belt,...legs,...boots].forEach(m=>m.visible=false);
+        if(head)head.children.forEach(c=>{if(!c.isSprite)c.visible=false;});
         kn={o,mx,ac,sp:0,px:null,pz:0,B:['l','r'].map(z=>['upperarm.','lowerarm.','hand.'].map(n=>o.getObjectByName(n+z)))};}
       const rot=(b,v0,v1)=>{K.q.setFromUnitVectors(v0,v1);b.getWorldQuaternion(K.q2).premultiply(K.q);b.parent.getWorldQuaternion(K.q).invert();b.quaternion.copy(K.q2).premultiply(K.q);b.updateWorldMatrix(false,true);};
       const aim=(b,c,t)=>{b.getWorldPosition(K.w);rot(b,K.v.copy(c).sub(K.w).normalize(),K.d.copy(t).sub(K.w).normalize());};
@@ -665,13 +672,7 @@ AFRAME.registerComponent('game',{
         const spd=kn.px===null?0:Math.hypot(hpos.x-kn.px,hpos.z-kn.pz)/dt;kn.px=hpos.x;kn.pz=hpos.z;kn.sp+=(Math.min(1,spd/1.2)-kn.sp)*.15;
         o.scale.setScalar(Math.min(1.25,Math.max(.7,hpos.y/1.68)));o.position.set(hpos.x-F.x*.12,0,hpos.z-F.z*.12);o.rotation.y=yaw+Math.PI;
         if(kn.ac.Idle)kn.ac.Idle.setEffectiveWeight(1-kn.sp);if(kn.ac.Running_A)kn.ac.Running_A.setEffectiveWeight(kn.sp);kn.mx.update(dt);o.updateMatrixWorld(true);
-        for(let i=0;i<2;i++){const [ua,la,hd]=kn.B[i],sd=i?1:-1,p=i?rp:lp,q=i?rq:lq;if(!ua||!la||!hd)continue;
-          ua.getWorldPosition(K.a);la.getWorldPosition(K.b);hd.getWorldPosition(K.c);const L1=K.a.distanceTo(K.b),L2=K.b.distanceTo(K.c);
-          K.t.set(0,0,.06).applyQuaternion(q).add(p);K.v.copy(K.t).sub(K.a);let D=K.v.length();K.v.divideScalar(D||1);D=Math.min(Math.max(D,.1),L1+L2-.005);
-          const a=(L1*L1-L2*L2+D*D)/(2*D),h=Math.sqrt(Math.max(L1*L1-a*a,0));
-          K.n.set(0,-1,0).addScaledVector(Rt,.7*sd);K.n.addScaledVector(K.v,-K.n.dot(K.v)).normalize();K.e.copy(K.a).addScaledVector(K.v,a).addScaledVector(K.n,h);
-          aim(ua,K.b,K.e);la.getWorldPosition(K.b);hd.getWorldPosition(K.c);aim(la,K.c,K.t);
-          hd.getWorldQuaternion(QL);rot(hd,K.v.copy(FA).applyQuaternion(QL),K.d.copy(FD).applyQuaternion(q));}
+        for(let i=0;i<2;i++){const ua=kn.B[i][0];if(ua)ua.scale.setScalar(1e-4);}o.updateMatrixWorld(true);
       }
       return {g,upd(hpos,hq,lp,lq,rp,rq,s,cv){
         F.set(0,0,-1).applyQuaternion(hq);F.y=0;if(F.lengthSq()>.01){F.normalize();yaw+=((Math.atan2(-F.x,-F.z)-yaw+Math.PI*3)%(Math.PI*2)-Math.PI)*.1;}
@@ -682,10 +683,10 @@ AFRAME.registerComponent('game',{
         for(let i=0;i<2;i++){const sd=i?1:-1,q=i?rq:lq;
           sh.copy(hpos).addScaledVector(Rt,.19*sd).addScaledVector(F,-.04);sh.y=hpos.y-.24;pauld[i].position.copy(sh);pauld[i].position.y+=.03;
           hd.set(0,0,.05).applyQuaternion(q).add(i?rp:lp);hand[i].position.copy(hd);hand[i].quaternion.copy(q);
-          const tc=cv?cv[i]:.15;setC(hand[i],hand[i].u.c+(tc-hand[i].u.c)*.35);
+          let tc=cv?cv[i]:null;if(!Array.isArray(tc)){const nv=tc==null?.15:tc;tc=[nv,nv,nv,nv];}setC(hand[i],tc);
           u.copy(hd).sub(sh);const L=u.length(),h=L<.58?Math.sqrt(.0841-L*L/4):0;u.divideScalar(L||1);
           n.set(0,-1,0).addScaledVector(Rt,.7*sd);n.addScaledVector(u,-n.dot(u)).normalize();
-          el.copy(sh).addScaledVector(u,L/2).addScaledVector(n,h);put(arms[i][0],sh,el);put(arms[i][1],el,hd);
+          el.copy(sh).addScaledVector(u,L/2).addScaledVector(n,h);put(arms[i][0],sh,el);put(arms[i][1],el,hd);elb[i].position.copy(el);
           hip.set(hpos.x,Math.max(hpos.y-.9,.45),hpos.z).addScaledVector(Rt,.09*sd).addScaledVector(F,-.05);foot.set(hip.x,.03,hip.z).addScaledVector(F,.04);put(legs[i],hip,foot);
           boots[i].position.copy(foot).addScaledVector(F,.04);boots[i].position.y=.05;boots[i].rotation.y=yaw;}
         if(sword){const w=s?(s===1?1:0):-1;if(w!==cur){cur=w;if(w<0)sword.visible=false;else{hand[w].add(sword);sword.visible=true;}}}
@@ -719,7 +720,8 @@ AFRAME.registerComponent('game',{
       case'dmg':{const e=E.find(e=>e.id===m.id&&!e.proxy);if(e)dmgE(e,m.n,m.aoe,m.f&&V(m.f[0],m.f[1],m.f[2]));break;}
       case'hurt':hurt(m.n);break;
       case'fx':burst(V(m.x,m.y,m.z),0xff7a22,80,4);snd('boom',V(m.x,m.y,m.z));break;}}
-    window.gameNet=(c,role)=>{net.c=c;net.role=role;c.on('data',m=>{try{onNet(m);}catch(e){console.error('net',e);}});
+    window.gameNet=(c,role)=>{net.c=c;net.role=role;net.rx=performance.now();if(!net.wd)net.wd=setInterval(()=>{if(net.c&&performance.now()-net.rx>30000){try{net.c.close();}catch(e){}}},3000);
+      c.on('data',m=>{net.rx=performance.now();try{onNet(m);}catch(e){console.error('net',e);}});
       c.on('close',()=>{net.c=null;net.role=null;remote.on=false;remote.t=null;rav.g.visible=false;dist2=null;say('Coéquipier déconnecté',4);if(mode==='dungeon')toLobby(true);});
       if(role==='guest'&&mode==='lobby')rig.position.x=-1;say('Coéquipier connecté !',4);
       if(role==='host'&&mode==='dungeon'&&curDun)net.send({t:'enter',k:curDun.k,seed:curDun.seed});};   // ami arrivé après l'hôte : on lui envoie le donjon en cours
@@ -750,7 +752,11 @@ AFRAME.registerComponent('game',{
     /* =========================================================
        OBJETS DU DÉCOR ATTRAPABLES (grip = attraper, relâcher = lancer) + ROUE DES ARMES
        ========================================================= */
-    const curlOf=k=>(GRIP[k]||TRIG[k]||held[k]||(sw.st==='held'&&sw.hand===k)||(bow.on&&bow.hand===k))?1:.15;
+    const curlOf=k=>{let b=[];try{const ss=scEl.renderer.xr.getSession&&scEl.renderer.xr.getSession();
+        if(ss)for(const is of ss.inputSources)if(is.handedness===(k==='L'?'left':'right')&&is.gamepad){b=is.gamepad.buttons;break;}}catch(e){}
+      const v=i=>b[i]?b[i].value:0,tc=i=>b[i]&&(b[i].touched||b[i].pressed)?1:0,ho=(held[k]||(sw.st==='held'&&sw.hand===k)||(bow.on&&bow.hand===k))?1:0;
+      const gr=Math.max(v(1),GRIP[k]?1:0,ho),tr=Math.max(v(0),TRIG[k]?1:0,ho*.9),th=Math.max(tc(3),tc(4),tc(5),ho*.8);
+      return [th*.85+.1,tr*.9+.08,gr*.9+.08,gr*.9+.08];};
     const GRN=[['barrel_small',.4],['keg',.4],['box_stacked',.35],['crates_stacked',.35],['candle_triple',.6],['coin_stack_medium',.5]];
     function mkGrab(x,z,parent,lob){const [k,sc]=GRN[Math.random()*GRN.length|0];GR.push({o:prop(k,sc,parent,x,0,z,Math.random()*6.28),v:V(),lobby:lob,held:null,rest:true});}
     [[1.8,1.0],[-1.6,1.9],[2.7,-.8],[-3,-1.9],[.6,3.2],[-.9,-.2],[3.3,-2.3],[-2.2,3.1],[2.1,2.6],[-3.6,1.2]].forEach(([x,z])=>mkGrab(x,z,lobby.g,true));
@@ -973,11 +979,11 @@ AFRAME.registerComponent('game',{
       if(remote.t){const m=remote.t,k=remote.on?Math.min(1,dt*14):1;lp7(remote.h,m.h,k);lp7(remote.l,m.l,k);lp7(remote.r,m.r,k);
         remote.on=true;remote.pos.copy(remote.h.p);rav.g.visible=true;rav.upd(remote.h.p,remote.h.q,remote.l.p,remote.l.q,remote.r.p,remote.r.q,remote.sw,remote.c);}
       if(net.c){net.pt-=dt;if(net.pt<=0){net.pt=.066;const pk=(p,q)=>[p.x,p.y,p.z,q.x,q.y,q.z,q.w].map(v=>Math.round(v*1e3)/1e3);
-          net.send({t:'p',h:pk(head,qh),l:pk(pl_,ql),r:pk(pr_,qr),s:sw.st==='held'?(sw.hand==='R'?1:2):0,c:[curlOf('L'),curlOf('R')]});}
+          net.send({t:'p',h:pk(head,qh),l:pk(pl_,ql),r:pk(pr_,qr),s:sw.st==='held'?(sw.hand==='R'?1:2):0,c:[curlOf('L'),curlOf('R')].map(a=>a.map(x=>Math.round(x*100)/100))});}
         if(net.role==='host'&&mode==='dungeon'){net.snapT-=dt;if(net.snapT<=0){net.snapT=.1;const r2=v=>Math.round(v*100)/100;
           net.send({t:'s',rm:remain,e:E.map(e=>[e.id,e.kind==='ghoul'?1:0,e.ally?1:0,r2(e.o.position.x),r2(e.o.position.z),r2(e.o.rotation.y),e.an||''])});}}}
       flash=Math.max(flash-dt,0);msgT-=dt;
-      const txt=`PV ${Math.max(hp,0)|0}   ${['Épée','Arc','Feu'][wmode]}   Ombres ${E.filter(e=>e.ally).length}${mode==='dungeon'?`   Ennemis ${remain}`:''}${msgT>0?'\n'+msg:''}`;
+      const txt=`PV ${Math.max(hp,0)|0}${net.c?'   Duo':''}   ${['Épée','Arc','Feu'][wmode]}   Ombres ${E.filter(e=>e.ally).length}${mode==='dungeon'?`   Ennemis ${remain}`:''}${msgT>0?'\n'+msg:''}`;
       if(txt!==lastHud+flash){lastHud=txt;hud.setAttribute('text',{value:txt,color:flash>0?'#ff5a5a':'#cfe3ff'});}
     };
   }
