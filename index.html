@@ -51,8 +51,8 @@ const V = (x=0,y=0,z=0)=>new T.Vector3(x,y,z);
    Entrée VR + écrans
    ========================================================= */
 const scEl = document.getElementById('sc'), intro = document.getElementById('intro');
-document.getElementById('go').onclick = ()=>{ scEl.enterVR().catch(()=>{ intro.style.display='none'; }); };
-scEl.addEventListener('enter-vr',()=>intro.style.display='none');
+document.getElementById('go').onclick = ()=>{ window.gameAudio&&window.gameAudio(); scEl.enterVR().catch(()=>{ intro.style.display='none'; }); };
+scEl.addEventListener('enter-vr',()=>{intro.style.display='none';window.gameAudio&&window.gameAudio();});
 scEl.addEventListener('exit-vr',()=>intro.style.display='flex');
 
 /* =========================================================
@@ -117,6 +117,83 @@ AFRAME.registerComponent('game',{
     S.add(new T.HemisphereLight(0x405088,0x140a0a,.5));
 
     /* ---------- Salles : lobby + donjons (murs, sol, piliers, torches, ombres douces) ---------- */
+    /* =========================================================
+       MODÈLES 3D RÉELS (CC0, KayKit) via CDN jsDelivr -> repli raw.githubusercontent -> repli procédural
+       ========================================================= */
+    const RS='KayKit-Character-Pack-Skeletons-1.0',RA='KayKit-Character-Pack-Adventures-1.0',RD='KayKit-Dungeon-Remastered-1.0';
+    const PS='addons/kaykit_character_pack_skeletons/',PA='addons/kaykit_character_pack_adventures/',PD='addons/kaykit_dungeon_remastered/Assets/gltf/';
+    const MODELS={blade:[RS,PS+'Assets/gltf/Skeleton_Blade.gltf'],axe:[RS,PS+'Assets/gltf/Skeleton_Axe.gltf'],staff:[RS,PS+'Assets/gltf/Skeleton_Staff.gltf'],
+      sword:[RA,PA+'Assets/gltf/sword_1handed.gltf']};
+    ['torch_mounted','banner_red','banner_blue','banner_green','banner_shield_blue','banner_thin_yellow','banner_triple_brown','barrel_small','barrel_small_stack','keg',
+     'crates_stacked','box_stacked','candle_triple','table_long_decorated_A','coin_stack_medium','sword_shield','trunk_large_B'].forEach(n=>MODELS[n]=[RD,PD+n+'.gltf.glb']);
+    MODELS.chest=[RD,PD+'chest.glb'];MODELS.chest_gold=[RD,PD+'chest_gold.glb'];
+    MODELS.minion=[RS,PS+'Characters/gltf/Skeleton_Minion.glb'];MODELS.rogue=[RS,PS+'Characters/gltf/Skeleton_Rogue.glb'];MODELS.mage=[RS,PS+'Characters/gltf/Skeleton_Mage.glb'];
+    const MP={},RG={},ldr=new T.GLTFLoader();
+    Object.keys(MODELS).forEach(k=>{const [repo,path]=MODELS[k],urls=[`https://cdn.jsdelivr.net/gh/KayKit-Game-Assets/${repo}@main/${path}`,`https://raw.githubusercontent.com/KayKit-Game-Assets/${repo}/main/${path}`];
+      MP[k]=new Promise(res=>{const tr=i=>i>=urls.length?res(null):ldr.load(urls[i],g=>res(g),undefined,()=>tr(i+1));tr(0);});
+      MP[k].then(g=>{RG[k]=g;});});
+    function prop(k,sc,parent,x=0,y=0,z=0,ry=0){   // pose un modèle (chargé en arrière-plan) dans un groupe
+      const g=new T.Group();g.position.set(x,y,z);g.rotation.y=ry;if(parent)parent.add(g);
+      MP[k].then(gl=>{if(!gl)return;const o=gl.scene.clone(true);o.scale.setScalar(sc);
+        o.traverse(m=>{if(m.isMesh){m.castShadow=m.receiveShadow=true;if(m.material.metalness>.3)m.material.metalness=.3;}});g.add(o);});
+      return g;}
+    function skClone(src){   // clone d'un modèle animé (squelette + peau)
+      const c=src.clone(true),a=[],b=[];src.traverse(o=>a.push(o));c.traverse(o=>b.push(o));
+      c.traverse(o=>{if(!o.isSkinnedMesh)return;const so=a[b.indexOf(o)],bones=so.skeleton.bones.map(bn=>b[a.indexOf(bn)]);
+        o.skeleton=new T.Skeleton(bones,so.skeleton.boneInverses);o.bind(o.skeleton,so.bindMatrix);});
+      return c;}
+
+    /* =========================================================
+       SON : tout est synthétisé (WebAudio), spatialisé en HRTF, avec réverbération de caverne
+       ========================================================= */
+    const A={c:null};
+    window.gameAudio=()=>{
+      if(A.c){A.c.resume();return;}
+      const c=A.c=new (window.AudioContext||window.webkitAudioContext)();
+      A.m=c.createGain();A.m.gain.value=.7;A.m.connect(c.destination);
+      const nb=c.createBuffer(1,c.sampleRate*2,c.sampleRate),d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;A.n=nb;
+      const rl=c.sampleRate*2.6,ib=c.createBuffer(2,rl,c.sampleRate);
+      for(let ch=0;ch<2;ch++){const x=ib.getChannelData(ch);for(let i=0;i<rl;i++)x[i]=(Math.random()*2-1)*Math.pow(1-i/rl,2.6);}
+      A.rv=c.createConvolver();A.rv.buffer=ib;const rg=c.createGain();rg.gain.value=.5;A.rv.connect(rg);rg.connect(A.m);
+      A.amb=c.createGain();A.amb.gain.value=0;A.amb.connect(A.m);A.amb.connect(A.rv);
+      [55,55.4,82.4,110.3].forEach((f,i)=>{const o=c.createOscillator(),g=c.createGain(),lf=c.createBiquadFilter();
+        o.type=i%2?'sawtooth':'triangle';o.frequency.value=f;lf.type='lowpass';lf.frequency.value=260;g.gain.value=.05;o.connect(lf);lf.connect(g);g.connect(A.amb);
+        const l=c.createOscillator(),lg=c.createGain();l.frequency.value=.05+i*.03;lg.gain.value=.025;l.connect(lg);lg.connect(g.gain);l.start();o.start();});
+      const w=c.createBufferSource();w.buffer=nb;w.loop=true;const wf=c.createBiquadFilter();wf.type='bandpass';wf.frequency.value=380;wf.Q.value=.7;
+      const wg=c.createGain();wg.gain.value=.05;w.connect(wf);wf.connect(wg);wg.connect(A.amb);
+      const wl=c.createOscillator(),wlg=c.createGain();wl.frequency.value=.11;wlg.gain.value=.03;wl.connect(wlg);wlg.connect(wg.gain);wl.start();w.start();
+      A.amb.gain.linearRampToValueAtTime(1,c.currentTime+3);
+    };
+    function dest(pos){if(!pos)return A.m;const p=A.c.createPanner();p.panningModel='HRTF';p.distanceModel='inverse';p.refDistance=1.5;p.rolloffFactor=1.3;
+      p.positionX.value=pos.x;p.positionY.value=pos.y;p.positionZ.value=pos.z;p.connect(A.m);return p;}
+    function tone(f,f2,d,type,v,pos,wet){if(!A.c)return;const c=A.c,o=c.createOscillator(),g=c.createGain(),t=c.currentTime;
+      o.type=type||'sine';o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(Math.max(f2||f,20),t+d);
+      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(v,t+.01);g.gain.exponentialRampToValueAtTime(.001,t+d);
+      o.connect(g);g.connect(dest(pos));if(wet)g.connect(A.rv);o.start(t);o.stop(t+d+.05);}
+    function nz(d,f1,f2,v,pos,type,q,wet){if(!A.c)return;const c=A.c,s=c.createBufferSource(),fl=c.createBiquadFilter(),g=c.createGain(),t=c.currentTime;
+      s.buffer=A.n;fl.type=type||'bandpass';fl.Q.value=q||1;fl.frequency.setValueAtTime(f1,t);fl.frequency.exponentialRampToValueAtTime(Math.max(f2||f1,20),t+d);
+      g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.001,t+d);s.connect(fl);fl.connect(g);g.connect(dest(pos));if(wet)g.connect(A.rv);s.start(t,Math.random(),d+.05);}
+    const SFX={
+      swish:(p,s)=>nz(.18,1800,500,Math.min(.1+s*.012,.35),p,'bandpass',1.2),
+      hit:p=>{tone(140,50,.25,'sine',.5,p);nz(.12,3000,600,.4,p,'bandpass',1);},
+      clang:p=>{tone(1250,1180,.5,'triangle',.18,p,1);tone(2100,2000,.35,'sine',.1,p,1);tone(120,45,.3,'sine',.6,p);},
+      die:p=>{nz(.5,900,150,.45,p,'lowpass',.8,1);tone(220,60,.5,'sawtooth',.12,p);},
+      hurt:()=>{tone(90,45,.35,'sine',.7);nz(.2,500,100,.4,null,'lowpass');},
+      grab:p=>{tone(1800,1700,.4,'sine',.15,p,1);nz(.1,4000,2000,.1,p,'highpass');},
+      recall:p=>nz(.5,300,3000,.3,p,'bandpass',2,1),
+      bow:p=>{tone(300,90,.18,'triangle',.3,p);nz(.1,2500,900,.15,p);},
+      charge:()=>tone(120,500,1.3,'sawtooth',.06),
+      fire:p=>nz(.7,400,1800,.35,p,'bandpass',.8,1),
+      boom:p=>{tone(80,25,.9,'sine',.9,p,1);nz(.8,2500,120,.6,p,'lowpass',.7,1);},
+      summon:p=>{[220,277,330,440].forEach((f,i)=>setTimeout(()=>tone(f,f*1.5,1.2,'sine',.14,p,1),i*90));nz(1.2,200,2500,.2,p,'bandpass',3,1);},
+      chime:()=>[660,880,1320].forEach((f,i)=>setTimeout(()=>tone(f,f,1.2,'sine',.14,null,1),i*110)),
+      rumble:p=>nz(1.2,200,40,.7,p,'lowpass',.8,1),
+      drip:p=>tone(1400,700,.12,'sine',.1,p,1),
+      crackle:p=>nz(.04,4500,2500,.12,p,'highpass'),
+      voice:()=>tone(150+Math.random()*70,140,.07,'square',.035)
+    };
+    const snd=(k,p,a)=>{if(A.c&&SFX[k])SFX[k](p,a);};
+
     const pillarMat = stone(230,1,3);
     function hall(R,Hh,hue,nTorch){
       const g=new T.Group(), torches=[];
@@ -129,10 +206,10 @@ AFRAME.registerComponent('game',{
       for(let i=0;i<nTorch;i++){
         const a=(i+.5)/nTorch*Math.PI*2, sx=Math.sin(a), cz=Math.cos(a), t=new T.Group();
         t.position.set(sx*(R-.15),2.2,cz*(R-.15));
-        const stick=new T.Mesh(new T.CylinderGeometry(.04,.06,.55,8),new T.MeshStandardMaterial({color:0x2b1a10,roughness:.9})); stick.position.y=-.1;
-        const flame=spr('255,140,40',1.1); flame.position.y=.3;
-        const li=new T.PointLight(0xff7a2a,1.5,10,2); li.position.set(-sx*.6,.4,-cz*.6);
-        t.add(stick,flame,li); g.add(t); torches.push({flame,li,i});
+        prop('torch_mounted',.55,t,0,0,0,a+Math.PI);   // vrai modèle 3D, tourné vers le centre
+        const flame=spr('255,140,40',1.1); flame.position.set(-sx*.3,.36,-cz*.3);
+        const li=new T.PointLight(0xff7a2a,1.5,10,2); li.position.set(-sx*.7,.45,-cz*.7);
+        t.add(flame,li); g.add(t); torches.push({flame,li,i});
       }
       const sp=new T.SpotLight(0x8aa0ff,2,0,.95,.9,1); sp.position.set(0,Hh-.3,0); sp.castShadow=true;
       sp.shadow.mapSize.set(1024,1024); sp.shadow.bias=-.0005; sp.shadow.camera.near=.5; sp.shadow.camera.far=Hh*3;
@@ -144,6 +221,45 @@ AFRAME.registerComponent('game',{
       crypt:   {name:'Crypte Maudite',       col:0xff3a5a,hue:350,kinds:['skeleton','ghoul'],n:14}
     };
     const lobby = hall(6.5,4.5,250,6); lobby.g.visible=true;
+
+    /* ---------- Déco du sanctuaire (collisions circulaires LOBS) ---------- */
+    const LOBS=[{x:0,z:-2,r:.55},{x:-4.6,z:-.2,r:.7},{x:-4.6,z:1.2,r:.7},{x:4.8,z:2.2,r:.8},{x:5.1,z:.4,r:.7},{x:4.2,z:3.6,r:.8},{x:-3.3,z:4.2,r:.5},{x:-5.2,z:-1.7,r:.8},{x:-2.4,z:.6,r:.5}];
+    for(let i=0;i<8;i++){const a=(i+.5)/8*Math.PI*2,deg=a*180/Math.PI;   // bannières entre les piliers (sauf près des torches)
+      if([30,90,150,210,270,330].some(d=>Math.abs(((deg-d+540)%360)-180)<12))continue;
+      prop(['banner_red','banner_blue','banner_shield_blue','banner_thin_yellow'][i%4],.55,lobby.g,Math.sin(a)*6.42,2.2,Math.cos(a)*6.42,a+Math.PI);}
+    prop('table_long_decorated_A',.5,lobby.g,-4.6,0,.5,0);
+    prop('sword_shield',.6,lobby.g,-6.4,2.0,.5,Math.PI/2);
+    prop('barrel_small_stack',.5,lobby.g,4.8,0,2.2,-.6);prop('keg',.5,lobby.g,5.1,0,.4,.5);prop('crates_stacked',.5,lobby.g,4.2,0,3.6,.3);
+    prop('barrel_small',.5,lobby.g,-3.3,0,4.2,1);prop('chest',.5,lobby.g,-5.2,0,-1.7,Math.atan2(5.2,1.7));prop('coin_stack_medium',.5,lobby.g,-4.5,0,-2.3,0);
+    for(let i=0;i<4;i++){const a=i*Math.PI/2+Math.PI/4,x=Math.sin(a)*1.5,z=-2+Math.cos(a)*1.5;   // bougies autour du piédestal
+      prop('candle_triple',.7,lobby.g,x,0,z,a);const f=spr('255,170,60',.55);f.position.set(x+.1,.62,z);lobby.g.add(f);}
+
+    /* ---------- PNJ : Morvak, squelette mage animé qui parle ---------- */
+    const npc={o:new T.Group(),mx:null,acts:{},an:null,line:-1,chars:0,shown:-1,talk:false,near:false};
+    npc.o.position.set(-2.4,0,.6);lobby.g.add(npc.o);
+    const dc=document.createElement('canvas');dc.width=1024;dc.height=320;const dg2=dc.getContext('2d'),dtex=new T.CanvasTexture(dc);dtex.colorSpace=T.SRGBColorSpace;
+    const board=new T.Mesh(new T.PlaneGeometry(1.7,.53),new T.MeshBasicMaterial({map:dtex,transparent:true,depthWrite:false}));board.position.y=2.3;board.visible=false;npc.o.add(board);
+    function npcPlay(n,once){const a=npc.acts[n];if(!a||(npc.an===n&&!once))return;const pr=npc.acts[npc.an];a.reset();a.setLoop(once?T.LoopOnce:T.LoopRepeat,Infinity);a.clampWhenFinished=false;a.fadeIn(.2).play();if(pr&&pr!==a)pr.fadeOut(.2);npc.an=n;}
+    MP.mage.then(gl=>{if(!gl)return;const o=skClone(gl.scene);o.traverse(m=>{if(m.isMesh){m.frustumCulled=false;m.castShadow=true;}});npc.o.add(o);
+      const hs=o.getObjectByName('handslot.r');if(hs&&RG.staff)hs.add(RG.staff.scene.clone(true));
+      npc.mx=new T.AnimationMixer(o);gl.animations.forEach(c=>npc.acts[c.name]=npc.mx.clipAction(c));
+      npc.mx.addEventListener('finished',()=>{npc.an=null;npcPlay('Idle_B');});npcPlay('Idle_B');});
+    const LINES=[`Salut, Chasseur. On m'appelle Morvak, gardien de ce sanctuaire. Les ombres murmurent ton nom...`,
+      `Saisis l'épée sur le piédestal avec la gâchette. Serre la poignée de ta main vide, et elle volera jusqu'à toi.`,
+      `Frappe avec élan ! Une lame immobile ne coupe que l'air. Plus ton geste est rapide, plus elle mord.`,
+      `Quand un ennemi tombe, son âme violette flotte un instant. Appuie sur A ou X près d'elle pour la relever.`,
+      `Les murs fissurés d'une lueur bleue cachent des salles secrètes. Un coup puissant, une flèche ou une boule de feu les brisera.`,
+      `Les goules sont rapides mais fragiles. Recule, esquive, puis frappe quand elles lèvent la hache.`,
+      `Y ou B fait apparaître l'arc. Tire la corde de l'autre main, et lâche la gâchette pour décocher.`,
+      `Dans les coffres cachés dorment des fontaines de vie et des runes de puissance. Les squelettes gardent les couloirs...`,
+      `Va, Monarque. Les portails t'attendent. Et ne te laisse pas mordre... les os, ça pique.`];
+    function drawBoard(txt){dg2.clearRect(0,0,1024,320);dg2.fillStyle='rgba(8,6,20,.85)';dg2.fillRect(6,6,1012,308);dg2.strokeStyle='#8a6cff';dg2.lineWidth=6;dg2.strokeRect(6,6,1012,308);
+      dg2.fillStyle='#b9a4ff';dg2.font='bold 34px Georgia,serif';dg2.fillText('Morvak, gardien des ombres',34,56);dg2.fillStyle='#e8ecff';dg2.font='38px Georgia,serif';
+      let y=112,line='';for(const w of txt.split(' ')){const t2=line+w+' ';if(dg2.measureText(t2).width>950){dg2.fillText(line,34,y);y+=48;line=w+' ';}else line=t2;}dg2.fillText(line,34,y);dtex.needsUpdate=true;}
+    function talk(){   // appelé par A/X dans le sanctuaire
+      if(Math.hypot(head.x-npc.o.position.x,head.z-npc.o.position.z)>3.4)return;
+      npc.line=(npc.line+1)%LINES.length;npc.chars=0;npc.shown=-1;npc.talk=true;board.visible=true;npcPlay(['Taunt','Cheer','Spellcast_Raise','Interact'][npc.line%4],true);}
+
 
 
     /* ---------- Portails ---------- */
@@ -178,6 +294,9 @@ AFRAME.registerComponent('game',{
     }
     const sw={o:mkSword(),st:'stand',hand:null,v:V(),rk:'R',rt:0,rec:false,prevTip:V(),tipV:V()};
     sw.o.position.set(0,1.15,-2); S.add(sw.o);
+    Object.assign(sw,{lv:V(),lp:V(),wv:V(),spd:0,swT:0,fresh:true});
+    MP.sword.then(gl=>{if(!gl)return;sw.o.children.forEach(c=>{if(!c.isSprite)c.visible=false;});   // remplace l'épée procédurale par le vrai modèle
+      const m=gl.scene.clone(true);m.scale.setScalar(.65);m.traverse(o=>{if(o.isMesh){o.material=o.material.clone();o.material.emissive=new T.Color(0x2244ff);o.material.emissiveIntensity=.45;o.castShadow=true;}});sw.o.add(m);});
 
     /* ---------- Arc magique ---------- */
     const bow={on:false,draw:false,hand:'L',o:new T.Group(),R:.4,pull:0};
@@ -228,10 +347,27 @@ AFRAME.registerComponent('game',{
       return {g,arms:[a1,a2],legs:[l1,l2]};
     }
     const ST={skeleton:{hp:3,sp:1.3,dmg:8},ghoul:{hp:5,sp:2.1,dmg:12}};
-    const E=[], souls=[], arrows=[], fires=[];
+    const E=[], corpses=[], souls=[], arrows=[], fires=[];
+    function mkModel(kind,ally){
+      const gh=kind==='ghoul'&&!ally,gl=RG[gh?'rogue':'minion'];if(!gl)return null;
+      const o=skClone(gl.scene),g=new T.Group();g.add(o);
+      o.traverse(m=>{if(m.isMesh){m.frustumCulled=false;m.material=m.material.clone();
+        if(ally){m.material.color.setHex(0x8fa8ff);m.material.emissive=new T.Color(0x1a2fff);m.material.emissiveIntensity=.8;}
+        else if(gh){m.material.color.setHex(0x8fd08f);m.material.emissive=new T.Color(0x0a3a10);m.material.emissiveIntensity=.6;}}});
+      const hs=o.getObjectByName('handslot.r'),wk=RG[gh?'axe':'blade'];if(hs&&wk)hs.add(wk.scene.clone(true));
+      const bl=new T.Mesh(G.blob,M.blob);bl.position.y=.02;g.add(bl);if(gh)g.scale.setScalar(1.05);
+      const mx=new T.AnimationMixer(o),acts={};gl.animations.forEach(c=>acts[c.name]=mx.clipAction(c));
+      return {g,mx,acts};
+    }
+    function play(e,n,once,force){
+      if(!e.mx)return;const a=e.acts[n];if(!a||(e.an===n&&!force))return;
+      const pr=e.an&&e.acts[e.an];a.reset();a.setLoop(once?T.LoopOnce:T.LoopRepeat,Infinity);a.clampWhenFinished=!!once;a.fadeIn(.15).play();
+      if(pr&&pr!==a)pr.fadeOut(.15);e.an=n;
+    }
     function spawn(kind,ally,pos){
-      const b=mkBody(kind,ally),s=ST[kind]; b.g.position.copy(pos); S.add(b.g);
-      const e={o:b.g,kind,ally,hp:ally?4:s.hp,sp:s.sp*(ally?1.3:1),dmg:s.dmg,cd:1,hitCd:0,atk:0,ph:Math.random()*6,rise:1,arms:b.arms,legs:b.legs};
+      const b=mkModel(kind,ally)||mkBody(kind,ally),s=ST[kind]; b.g.position.copy(pos); S.add(b.g);
+      const e={o:b.g,kind,ally,hp:ally?5:s.hp,sp:s.sp*(ally?1.3:1),dmg:s.dmg,cd:1,hitCd:0,atk:0,ph:Math.random()*6,rise:1,arms:b.arms,legs:b.legs,mx:b.mx,acts:b.acts,an:null,stun:0,kb:V(),applied:true};
+      if(e.mx){const sa=e.acts['Spawn_Ground_Skeletons']||e.acts['Skeletons_Awaken_Floor'];e.rise=sa?sa.getClip().duration:1;if(sa)play(e,sa.getClip().name,true,true);}
       E.push(e); return e;
     }
 
@@ -241,9 +377,9 @@ AFRAME.registerComponent('game',{
       const gp=c.controller.gamepad; if(gp.hapticActuators&&gp.hapticActuators[0]) gp.hapticActuators[0].pulse(i,d);
       else if(gp.vibrationActuator) gp.vibrationActuator.playEffect('dual-rumble',{duration:d,strongMagnitude:i,weakMagnitude:i});}catch(e){}};
     const say=(s,t=3)=>{msg=s;msgT=t;};
-    function hurt(n){hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}
+    function hurt(n){snd('hurt');hp-=n;flash=.4;buzz('L',.8,120);buzz('R',.8,120); if(hp<=0){hp=100;toLobby();say('Vous êtes tombé… retour au sanctuaire',4);}}
 
-    function clearField(){E.splice(0).forEach(e=>S.remove(e.o));souls.splice(0).forEach(s=>S.remove(s.s));arrows.splice(0).forEach(a=>S.remove(a.m));fires.splice(0).forEach(f=>S.remove(f.m));}
+    function clearField(){corpses.splice(0).forEach(c=>S.remove(c.e.o));E.splice(0).forEach(e=>S.remove(e.o));souls.splice(0).forEach(s=>S.remove(s.s));arrows.splice(0).forEach(a=>S.remove(a.m));fires.splice(0).forEach(f=>S.remove(f.m));}
     /* ---------- Donjons procéduraux : salles, couloirs, boucles, portes secrètes ---------- */
     const CELL=2.6, WH=3.4, DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
     let D=null, dist=null, flowT=0, remain=0, power=1;
@@ -252,8 +388,8 @@ AFRAME.registerComponent('game',{
     const solidC=(i,j)=>{const c=D.g[j]&&D.g[j][i];return c===undefined||c==='#'||c==='D';};
     const ptSolid=(x,z)=>{const [i,j]=cellOf(x,z);return solidC(i,j);};
     function blocked(x,z){   // collision joueur (lobby = cercle, donjon = grille)
-      if(mode==='lobby')return Math.hypot(x,z)>lobby.R-1;
-      return ptSolid(x+.3,z+.3)||ptSolid(x-.3,z+.3)||ptSolid(x+.3,z-.3)||ptSolid(x-.3,z-.3);
+      if(mode==='lobby')return Math.hypot(x,z)>lobby.R-1||LOBS.some(o=>Math.hypot(x-o.x,z-o.z)<o.r+.25);
+      return ptSolid(x+.3,z+.3)||ptSolid(x-.3,z+.3)||ptSolid(x+.3,z-.3)||ptSolid(x-.3,z-.3)||D.obs.some(o=>Math.hypot(x-o.x,z-o.z)<o.r+.25);
     }
     const los=(ax,az,bx,bz)=>{const d=Math.hypot(bx-ax,bz-az),n=Math.ceil(d/.6);
       for(let k=1;k<n;k++){const t=k/n;if(ptSolid(ax+(bx-ax)*t,az+(bz-az)*t))return false;}return true;};
@@ -267,7 +403,7 @@ AFRAME.registerComponent('game',{
       let hit=false;
       for(const d of D.doors){if(d.broken)continue;const cx=(d.i+.5)*CELL,cz=(d.j+.5)*CELL;
         if(Math.hypot(p.x-cx,p.z-cz)<r&&p.y<WH){d.broken=true;D.g[d.j][d.i]='.';D.dg.remove(d.m,d.r);
-          burst(V(cx,1.2,cz),0x998877,80,3);burst(V(cx,1.5,cz),0x66ccff,40,2);say('Un passage secret s\'ouvre !',3);flowT=0;hit=true;}}
+          snd('rumble',V(cx,1,cz));burst(V(cx,1.2,cz),0x998877,80,3);burst(V(cx,1.5,cz),0x66ccff,40,2);say('Un passage secret s\'ouvre !',3);flowT=0;hit=true;}}
       return hit;
     }
     function genDungeon(cf){
@@ -308,22 +444,31 @@ AFRAME.registerComponent('game',{
       const ce=new T.Mesh(new T.PlaneGeometry(W*CELL,Hh*CELL).rotateX(Math.PI/2),fm);ce.position.set(W*CELL/2,WH,Hh*CELL/2);dg.add(fl,ce);
       /* Torches réparties dans le donjon ; seules les 4 plus proches du joueur éclairent vraiment */
       const cands=[];solids.forEach(([i,j])=>{for(const [dx,dz] of DIRS)if(g[j+dz]&&g[j+dz][i+dx]==='.'){
-        cands.push(V((i+.5+dx*.5)*CELL+dx*.1,1.9,(j+.5+dz*.5)*CELL+dz*.1));break;}});
-      const stp=Math.max(1,Math.ceil(cands.length/26)),torches=cands.filter((_,n)=>n%stp===0).map(p=>{const f=spr('255,140,40',1);f.position.copy(p);dg.add(f);return {p,f};});
-      const sticks=new T.InstancedMesh(new T.CylinderGeometry(.03,.05,.45,6),new T.MeshStandardMaterial({color:0x2b1a10,roughness:.9}),torches.length);
-      torches.forEach((q,n)=>{mx.setPosition(q.p.x,q.p.y-.3,q.p.z);sticks.setMatrixAt(n,mx);});sticks.frustumCulled=false;dg.add(sticks);
+        cands.push({p:V((i+.5+dx*.5)*CELL+dx*.1,1.9,(j+.5+dz*.5)*CELL+dz*.1),dx,dz});break;}});
+      const stp=Math.max(1,Math.ceil(cands.length/26)),torches=[];
+      cands.forEach((c,n)=>{const ry=Math.atan2(c.dx,c.dz);
+        if(n%stp===0){const f=spr('255,140,40',1);f.position.set(c.p.x+c.dx*.3,2.0,c.p.z+c.dz*.3);dg.add(f);
+          prop('torch_mounted',.55,dg,c.p.x,1.65,c.p.z,ry);torches.push({p:V(c.p.x+c.dx*.3,1.9,c.p.z+c.dz*.3),f});}
+        else if(stp>2&&n%stp===(stp>>1))prop(['banner_red','banner_blue','banner_green','banner_thin_yellow','banner_triple_brown'][n%5],.5,dg,c.p.x,1.15,c.p.z,ry);});
+      /* Props dans les coins des salles (tonneaux, caisses, coffres) avec collisions circulaires */
+      const obs=[],PR=[['barrel_small',.5],['barrel_small_stack',.5],['keg',.5],['crates_stacked',.5],['box_stacked',.5],['trunk_large_B',.55]];
+      for(const r of rooms.slice(1))for(const [ci_,cj_] of [[r.x,r.y],[r.x+r.w-1,r.y],[r.x,r.y+r.h-1],[r.x+r.w-1,r.y+r.h-1]]){
+        if(obs.length>=12||g[cj_][ci_]!=='.'||Math.random()<.35)continue;
+        if(DIRS.filter(([a,b])=>g[cj_+b][ci_+a]!=='#').length!==2)continue;   // vrai coin de salle uniquement
+        const [k,sc]=PR[Math.random()*PR.length|0],c=cw(ci_,cj_);
+        prop(k,sc,dg,c.x,0,c.z,Math.random()*6.28);obs.push({x:c.x,z:c.z,r:.6});}
       const tl=[0,1,2,3].map(()=>{const l=new T.PointLight(0xff7a2a,1.6,9,2);dg.add(l);return l;}),lan=new T.PointLight(0x7788ff,.8,8,2);dg.add(lan);
       /* Portes secrètes : fissure bleue lumineuse sur la face visible */
       const dm=new T.MeshStandardMaterial({map:wm.map,bumpMap:wm.bumpMap,bumpScale:3,roughness:.88,emissive:0x0a1a3a});
       doors.forEach(d=>{const cx=(d.i+.5)*CELL,cz=(d.j+.5)*CELL;d.m=new T.Mesh(new T.BoxGeometry(CELL,WH,CELL),dm);d.m.position.set(cx,WH/2,cz);
         d.r=spr('90,200,255',1.1);d.r.position.set(cx-d.dx*(CELL/2+.1),1.3,cz-d.dz*(CELL/2+.1));dg.add(d.m,d.r);});
-      const gold=new T.MeshStandardMaterial({color:0xb08a3a,metalness:.9,roughness:.3}),wood=new T.MeshStandardMaterial({color:0x5a3a1a,roughness:.7});
-      chests.forEach(c=>{const m=new T.Group(),b=new T.Mesh(new T.BoxGeometry(.7,.4,.45),wood),tr=new T.Mesh(new T.BoxGeometry(.72,.1,.47),gold),
-        gl=spr(c.k==='C'?'80,255,140':'255,120,60',1.4);b.position.y=.2;tr.position.y=.42;gl.position.y=.6;m.add(b,tr,gl);m.position.copy(cw(c.i,c.j));c.m=m;dg.add(m);});
+      chests.forEach((c,n)=>{const m=new T.Group(),d=doors[n],gl=spr(c.k==='C'?'80,255,140':'255,120,60',1.6);gl.position.y=.7;m.add(gl);
+        prop(c.k==='C'?'chest':'chest_gold',.5,m,0,0,-.1,Math.atan2(-d.dx,-d.dz));prop('coin_stack_medium',.5,m,.9,0,.5,1);
+        m.position.copy(cw(c.i,c.j));c.m=m;dg.add(m);});
       const spawns=[];for(let k=0;k<cf.n;k++){const r=rooms[1+k%(rooms.length-1)];
         spawns.push({x:(r.x+Math.random()*r.w)*CELL,z:(r.y+Math.random()*r.h)*CELL,kind:cf.kinds[k%cf.kinds.length],done:false});}
       S.add(dg);
-      return {g,W,H:Hh,dg,torches,tl,lan,doors,chests,spawns,tflow:0,st:cw(first.cx,first.cy),ex:cw(last.cx,last.cy)};
+      return {g,W,H:Hh,dg,torches,tl,lan,doors,chests,spawns,obs,tflow:0,st:cw(first.cx,first.cy),ex:cw(last.cx,last.cy)};
     }
     function disposeD(){S.remove(D.dg);D.dg.traverse(o=>{if(o.geometry)o.geometry.dispose();});D=null;}
     function toLobby(){clearField();if(D)disposeD();lobby.g.visible=true;mode='lobby';exitP.visible=false;dist=null;
@@ -338,7 +483,7 @@ AFRAME.registerComponent('game',{
     /* ---------- Épée : saisir, lâcher, rappeler ---------- */
     const _p=V(),_q=new T.Quaternion(),head=V();
     const wp=(o,out=V())=>{o.updateWorldMatrix(true,false);return o.getWorldPosition(out);};
-    function holdSword(k){sw.hand=k;sw.st='held';sw.rec=false;H[k].add(sw.o);sw.o.position.set(0,0,0);sw.o.rotation.set(-Math.PI/2+SWORD_TILT,0,0);sw.o.visible=true;buzz(k,.7,80);}
+    function holdSword(k){sw.fresh=true;snd('grab',sw.o.position);sw.hand=k;sw.st='held';sw.rec=false;H[k].add(sw.o);sw.o.position.set(0,0,0);sw.o.rotation.set(-Math.PI/2+SWORD_TILT,0,0);sw.o.visible=true;buzz(k,.7,80);}
     function freeSword(){S.attach(sw.o);sw.st='drop';sw.v.set(0,0,0);}
     function toggleBow(){
       if(!bow.on){
@@ -355,10 +500,10 @@ AFRAME.registerComponent('game',{
       const k=charge.k, pw=Math.min(charge.t,1.5)/1.5, m=mkFire();
       wp(charge.g,m.position);   // position lue AVANT de retirer la boule de la main
       const d=V(0,0,-1).applyQuaternion(H[k].getWorldQuaternion(_q)); H[k].remove(charge.g);
-      m.scale.setScalar(.06+pw*.12); S.add(m); fires.push({m,v:d.multiplyScalar(14),pw,life:3,s:.06+pw*.12}); buzz(k,.9,150); charge.k=null;
+      m.scale.setScalar(.06+pw*.12); S.add(m); fires.push({m,v:d.multiplyScalar(14),pw,life:3,s:.06+pw*.12}); buzz(k,.9,150); snd('fire',m.position); charge.k=null;
     }
     function explode(f){
-      burst(f.m.position,0xff7a22,120,5);burst(f.m.position,0xffd27a,60,3);
+      snd('boom',f.m.position);burst(f.m.position,0xff7a22,120,5);burst(f.m.position,0xffd27a,60,3);
       const r=2.2+f.pw*1.3; if(mode==='dungeon')hitSecret(f.m.position,3.4);
       for(const e of E.slice()) if(!e.ally&&e.o.position.distanceTo(f.m.position)<r) dmgE(e,Math.ceil((2+f.pw*3)*power),true);
     }
@@ -367,7 +512,7 @@ AFRAME.registerComponent('game',{
       const k=other(bow.hand); bow.o.updateWorldMatrix(true,false);
       const from=bow.o.localToWorld(V(0,0,bow.R+bow.pull)), to=wp(bow.o), d=to.clone().sub(wp(H[k])).normalize();
       const m=bow.arrow.clone(); m.visible=true; S.add(m); m.position.copy(from); m.quaternion.setFromUnitVectors(V(0,0,-1),d);
-      arrows.push({m,v:d.multiplyScalar(10+bow.pull*50),life:3}); buzz(bow.hand,.8,100);
+      arrows.push({m,v:d.multiplyScalar(10+bow.pull*50),life:3}); buzz(bow.hand,.8,100);snd('bow',from);
     }
     /* ---------- Contrôles manettes ---------- */
     const stick={x:0,y:0}; let snap=false;
@@ -379,7 +524,7 @@ AFRAME.registerComponent('game',{
       el.addEventListener('triggerdown',()=>{
         if(!bow.on&&(sw.st==='stand'||sw.st==='drop')&&wp(H[k]).distanceTo(sw.o.position)<.4){holdSword(k);return;}
         if(bow.on){if(k!==bow.hand)bow.draw=true;return;}
-        if(!(sw.st==='held'&&sw.hand===k)){charge.k=k;charge.t=0;H[k].add(charge.g);charge.g.position.set(0,0,-.15);}
+        if(!(sw.st==='held'&&sw.hand===k)){charge.k=k;charge.t=0;snd('charge');H[k].add(charge.g);charge.g.position.set(0,0,-.15);}
       });
       el.addEventListener('triggerup',()=>{
         if(bow.on){if(bow.draw&&k!==bow.hand&&bow.pull>.12)shoot();if(k!==bow.hand){bow.draw=false;bow.pull=0;bow.setString(bow.R);bow.arrow.visible=false;}return;}
@@ -395,17 +540,21 @@ AFRAME.registerComponent('game',{
     }
 
     /* ---------- Dégâts, mort, ombres ---------- */
-    function dmgE(e,n,aoe){
-      e.hp-=n; burst(V(e.o.position.x,1.2,e.o.position.z),e.ally?0x6a8cff:e.kind==='ghoul'?0x66ff88:0xe8e0c8,aoe?8:18,2.5);
-      if(e.hp<=0){S.remove(e.o);E.splice(E.indexOf(e),1);
+    function dmgE(e,n,aoe,from){
+      e.hp-=n; snd(e.hp<=0?'die':'hit',e.o.position);
+      burst(V(e.o.position.x,1.2,e.o.position.z),e.ally?0x6a8cff:e.kind==='ghoul'?0x66ff88:0xe8e0c8,aoe?8:18,2.5);
+      if(from){const d=V(e.o.position.x-from.x,0,e.o.position.z-from.z).normalize();e.kb.addScaledVector(d,n*1.8);}   // recul
+      if(e.hp<=0){E.splice(E.indexOf(e),1);if(e.mx){play(e,'Death_A',true,true);corpses.push({e,t:2.6});}else S.remove(e.o);
         if(!e.ally){const s=spr('160,100,255',.8);s.position.set(e.o.position.x,.6,e.o.position.z);S.add(s);souls.push({k:e.kind,s,t:15});say('Une ombre s\'élève… (X/A ou plantez l\'épée)',2.5);}}
+      else if(e.mx&&!aoe){e.stun=.45;e.atk=0;play(e,'Hit_A',true,true);}
     }
     function summon(s){
+      if(mode==='lobby'){talk();return;}
       if(!s){let d=5;head.y=0;for(const o of souls){const dd=Math.hypot(o.s.position.x-head.x,o.s.position.z-head.z);if(dd<d){d=dd;s=o;}}}
       if(!s)return; if(E.filter(e=>e.ally).length>=4){say('Armée d\'ombres au maximum',2);return;}
       souls.splice(souls.indexOf(s),1); S.remove(s.s);
       burst(s.s.position,0x7a5cff,90,3);burst(s.s.position,0x4aa8ff,60,2); spawn(s.k,true,V(s.s.position.x,0,s.s.position.z));
-      say('Levez-vous.',2); buzz('R',.9,200);buzz('L',.9,200);
+      say('Levez-vous.',2);snd('summon',s.s.position); buzz('R',.9,200);buzz('L',.9,200);
     }
     const segDist=(p,e)=>{const o=e.o.position,y=Math.min(Math.max(p.y,.1),1.7);return Math.hypot(p.x-o.x,p.y-y,p.z-o.z);};
 
@@ -433,7 +582,7 @@ AFRAME.registerComponent('game',{
       if(sw.st==='stand'){sw.o.position.y=1.15+Math.sin(t*.0015)*.03;sw.o.rotation.y+=dt*.4;}
       else if(sw.st==='drop'){sw.v.y-=9.8*dt;sw.o.position.addScaledVector(sw.v,dt);
         if(sw.o.position.y<.05){sw.o.position.y=.05;sw.v.set(0,0,0);sw.o.rotation.set(0,0,Math.PI/2);}}
-      if(sw.rec&&sw.st!=='recall'&&(sw.st==='stand'||sw.st==='drop')){sw.rt+=dt;if(sw.rt>.35){sw.st='recall';sw.v.set(0,0,0);say('Rappel !',1);}}
+      if(sw.rec&&sw.st!=='recall'&&(sw.st==='stand'||sw.st==='drop')){sw.rt+=dt;if(sw.rt>.35){sw.st='recall';sw.v.set(0,0,0);say('Rappel !',1);snd('recall',sw.o.position);}}
       if(sw.st==='recall'){
         const target=wp(H[sw.rk]).add(V(0,.05,0)), d=target.clone().sub(sw.o.position), dist=d.length();d.normalize();
         sw.v.addScaledVector(d,70*dt); if(sw.v.length()>20)sw.v.setLength(20);
@@ -441,15 +590,26 @@ AFRAME.registerComponent('game',{
         burst(sw.o.position,0x6a8cff,2,.5);
         if(dist<.3){holdSword(sw.rk);burst(sw.o.position,0x9fd6ff,30,2);}
       }
-      /* -- Frappes d'épée (tenue ou en vol) -- */
+      /* -- Frappes d'épée : il faut un vrai coup. La vitesse est mesurée dans le repère du corps (marcher ne compte pas)
+            puis lissée contre les tremblements ; la lame doit aller VERS l'ennemi ; les dégâts dépendent de la vitesse. -- */
+      sw.swT-=dt;
       if(sw.st==='held'||sw.st==='recall'){
-        sw.o.updateWorldMatrix(true,false); tip.set(0,1,0).applyMatrix4(sw.o.matrixWorld); mid.set(0,.55,0).applyMatrix4(sw.o.matrixWorld);
-        sw.tipV.copy(tip).sub(sw.prevTip).divideScalar(dt); const spd=sw.tipV.length(); sw.prevTip.copy(tip);
-        if(spd>2.2&&spd<80) for(const e of E.slice()){ if(e.ally||e.hitCd>0||e.rise>0)continue;
-          if(segDist(tip,e)<.55||segDist(mid,e)<.55){e.hitCd=.35;dmgE(e,spd>4.5?2:1);burst(tip,0xffffff,14,3);if(sw.hand)buzz(sw.hand,1,80);}}
-        if(spd>3&&spd<80&&mode==='dungeon'&&hitSecret(tip,1.7)&&sw.hand)buzz(sw.hand,1,150);
+        sw.o.updateWorldMatrix(true,false); tip.set(0,.95,0).applyMatrix4(sw.o.matrixWorld); mid.set(0,.5,0).applyMatrix4(sw.o.matrixWorld);
+        const lt=rig.worldToLocal(tmp.copy(tip));
+        if(sw.fresh){sw.lp.copy(lt);sw.prevTip.copy(tip);sw.spd=0;sw.fresh=false;}
+        sw.lv.copy(lt).sub(sw.lp).divideScalar(dt);sw.lp.copy(lt);
+        sw.spd=sw.spd*.6+Math.min(sw.lv.length(),40)*.4;const spd=sw.spd;
+        sw.wv.copy(tip).sub(sw.prevTip).divideScalar(dt);
+        if(spd>4&&sw.swT<=0){snd('swish',tip,spd);sw.swT=.25;}
+        if(spd>3.2) for(const e of E.slice()){ if(e.ally||e.hitCd>0||e.rise>0)continue;
+          const near=Math.min(segDist(tip,e),segDist(mid,e),segDist(sw.prevTip,e));
+          const toE=V(e.o.position.x-tip.x,0,e.o.position.z-tip.z);
+          if(near<.5&&sw.wv.dot(toE)>0){e.hitCd=.45;const pw=spd>9?3:spd>6?2:1;dmgE(e,pw,false,tip);
+            burst(tip,0xffffff,10+pw*6,3+pw);snd(pw>1?'clang':'hit',tip);buzz(sw.hand||'R',.4+pw*.2,60+pw*30);}}
+        if(spd>5&&mode==='dungeon'&&hitSecret(tip,1.7)&&sw.hand)buzz(sw.hand,1,150);
         /* Geste d'ombre : planter l'épée au sol près d'une âme */
-        if(sw.st==='held'&&tip.y<.2&&sw.tipV.y<-1.2)for(const s of souls)if(Math.hypot(s.s.position.x-tip.x,s.s.position.z-tip.z)<1.6){summon(s);break;}
+        if(sw.st==='held'&&tip.y<.2&&sw.wv.y<-1.2)for(const s of souls)if(Math.hypot(s.s.position.x-tip.x,s.s.position.z-tip.z)<1.6){summon(s);break;}
+        sw.prevTip.copy(tip);
       }
 
       /* -- Arc : tension de la corde -- */
@@ -480,35 +640,68 @@ AFRAME.registerComponent('game',{
         remain=D.spawns.filter(s=>!s.done).length+E.filter(e=>!e.ally).length;
         if(remain===0&&!exitP.visible){exitP.visible=true;say('Gardiens vaincus ! Le portail s\'est ouvert au fond du donjon.',5);}
         for(const c of D.chests)if(!c.got&&Math.hypot(head.x-c.m.position.x,head.z-c.m.position.z)<1.1){
-          c.got=true;D.dg.remove(c.m);burst(V(c.m.position.x,.6,c.m.position.z),c.k==='C'?0x66ff99:0xff8844,70,3);
+          c.got=true;snd('chime');D.dg.remove(c.m);burst(V(c.m.position.x,.6,c.m.position.z),c.k==='C'?0x66ff99:0xff8844,70,3);
           if(c.k==='C'){hp=100;say('Fontaine de vie : PV restaurés !',4);}else{power+=.5;say('Rune de puissance : sorts et flèches +50 %',4);}
           buzz('L',.8,200);buzz('R',.8,200);}
       }
-      /* -- IA ennemis / ombres alliées -- */
+      /* -- IA ennemis / ombres : animations squelettiques, coup préparé (esquivable), recul, étourdissement, pas d'interpénétration -- */
       for(const e of E.slice()){
-        const o=e.o,P=o.position;e.hitCd-=dt;e.cd-=dt;
-        if(e.rise>0){e.rise-=dt;P.y=-1.8*Math.max(e.rise,0);continue;}
+        const o=e.o,P=o.position;e.hitCd-=dt;e.cd-=dt;e.stun-=dt;e.mx&&e.mx.update(dt);
+        if(e.rise>0){e.rise-=dt;if(!e.mx)P.y=-1.8*Math.max(e.rise,0);else if(e.rise<=0)play(e,'Idle_Combat');continue;}
         const [ci,cj]=cellOf(P.x,P.z),dd0=dist&&dist[cj]?dist[cj][ci]:999;
-        if(!e.ally&&dd0>9)continue;   // ennemi endormi tant que le joueur est loin
+        if(e.kb.lengthSq()>.01){const nx=P.x+e.kb.x*dt,nz=P.z+e.kb.z*dt;if(!ptSolid(nx,nz)){P.x=nx;P.z=nz;}e.kb.multiplyScalar(Math.max(0,1-dt*7));}
+        if(!e.ally&&dd0>9){play(e,'Idle_Combat');continue;}   // endormi tant que le joueur est loin
+        if(e.stun>0)continue;
         const cand=e.ally?E.filter(f=>!f.ally&&los(P.x,P.z,f.o.position.x,f.o.position.z)):[{pl:1,o:{position:head}},...E.filter(f=>f.ally)];
         let ob=null,d=1e9;for(const c of cand){const dd=Math.hypot(c.o.position.x-P.x,c.o.position.z-P.z);if(dd<d){d=dd;ob=c;}}
         let fol=false;if(!ob){fol=true;ob={pl:1,o:{position:head}};d=Math.hypot(head.x-P.x,head.z-P.z);}
         const seen=los(P.x,P.z,ob.o.position.x,ob.o.position.z);
         let tx=ob.o.position.x,tz=ob.o.position.z;
-        if(!seen){let best=dd0;tx=null;   // pas de vue directe : on suit le couloir
+        if(!seen){let best=dd0;tx=null;
           for(const [a,b] of DIRS){const v=dist[cj+b]&&dist[cj+b][ci+a];if(v!==undefined&&v<best){best=v;tx=(ci+a+.5)*CELL;tz=(cj+b+.5)*CELL;}}
           if(tx===null){tx=head.x;tz=head.z;}}
-        const dx=tx-P.x,dz=tz-P.z,md=Math.hypot(dx,dz)||1;o.rotation.y=Math.atan2(dx,dz);
-        const stop=fol?2.4:1.0;
-        if((seen?d:9)>stop){P.x+=dx/md*e.sp*dt;P.z+=dz/md*e.sp*dt;e.ph+=dt*e.sp*5;}
-        if(!fol&&seen&&d<1.2&&e.cd<=0){e.cd=1.3;e.atk=.35;if(ob.pl)hurt(e.dmg);else dmgE(ob,1);}
-        e.atk=Math.max(e.atk-dt,0);
-        const sw_=Math.sin(e.ph)*.6;e.legs[0].rotation.x=sw_;e.legs[1].rotation.x=-sw_;
-        e.arms[0].rotation.x=e.atk>0?-1.8:-sw_;e.arms[1].rotation.x=e.atk>0?-1.8:sw_;
-        if(e.kind==='ghoul'){e.arms[0].rotation.x-=.5;e.arms[1].rotation.x-=.5;}
+        const dx=tx-P.x,dz=tz-P.z,md=Math.hypot(dx,dz)||1,want=Math.atan2(dx,dz);
+        o.rotation.y+=((want-o.rotation.y+Math.PI*3)%(Math.PI*2)-Math.PI)*Math.min(1,dt*8);
+        const stop=fol?2.4:1.0,atking=e.atk>0;
+        if(!atking&&(seen?d:9)>stop){P.x+=dx/md*e.sp*dt;P.z+=dz/md*e.sp*dt;e.ph+=dt*e.sp*5;play(e,e.kind==='ghoul'&&!e.ally?'Running_A':'Walking_D_Skeletons');}
+        else if(!atking)play(e,'Idle_Combat');
+        if(!atking&&!fol&&seen&&d<1.3&&e.cd<=0){e.cd=1.7;e.atk=.7;e.applied=false;snd('swish',P,5);play(e,Math.random()<.5?'1H_Melee_Attack_Chop':'1H_Melee_Attack_Slice_Diagonal',true,true);}
+        if(e.atk>0){e.atk-=dt;   // le coup part à mi-animation : on peut reculer et l'esquiver
+          if(!e.applied&&e.atk<=.35){e.applied=true;if(d<1.6&&seen){if(ob.pl)hurt(e.dmg);else if(ob.hp>0)dmgE(ob,1);}}}
+        for(const f of E){if(f===e)continue;const ax=P.x-f.o.position.x,az=P.z-f.o.position.z,q=Math.hypot(ax,az);   // les corps ne se traversent pas
+          if(q<.8&&q>.001){const pu=(.8-q)*.5,nx=P.x+ax/q*pu,nz=P.z+az/q*pu;if(!ptSolid(nx,nz)){P.x=nx;P.z=nz;}}}
+        if(!e.ally){const hq=Math.hypot(P.x-head.x,P.z-head.z);if(hq<.6&&hq>.001){P.x+=(P.x-head.x)/hq*(.6-hq);P.z+=(P.z-head.z)/hq*(.6-hq);}}
+        for(const ob2 of D.obs){const ax=P.x-ob2.x,az=P.z-ob2.z,q=Math.hypot(ax,az);if(q<ob2.r+.3&&q>.001){P.x=ob2.x+ax/q*(ob2.r+.3);P.z=ob2.z+az/q*(ob2.r+.3);}}
+        if(!e.mx){const sw_=Math.sin(e.ph)*.6;e.legs[0].rotation.x=sw_;e.legs[1].rotation.x=-sw_;
+          e.arms[0].rotation.x=e.atk>0?-1.8:-sw_;e.arms[1].rotation.x=e.atk>0?-1.8:sw_;
+          if(e.kind==='ghoul'){e.arms[0].rotation.x-=.5;e.arms[1].rotation.x-=.5;}}
       }
+      for(let i=corpses.length-1;i>=0;i--){const c=corpses[i];c.e.mx.update(dt);c.t-=dt;if(c.t<1)c.e.o.position.y-=dt*.6;if(c.t<=0){S.remove(c.e.o);corpses.splice(i,1);}}
       for(let i=souls.length-1;i>=0;i--){const s=souls[i];s.t-=dt;s.s.position.y=.6+Math.sin(t*.004+i)*.1;if(Math.random()<.2)burst(s.s.position,0x8a5cff,1,.5);
         if(s.t<=0){S.remove(s.s);souls.splice(i,1);}}
+
+      /* -- PNJ du sanctuaire -- */
+      if(mode==='lobby'){
+        npc.mx&&npc.mx.update(dt);
+        const nd=Math.hypot(head.x-npc.o.position.x,head.z-npc.o.position.z);
+        npc.o.rotation.y+=((Math.atan2(head.x-npc.o.position.x,head.z-npc.o.position.z)-npc.o.rotation.y+Math.PI*3)%(Math.PI*2)-Math.PI)*Math.min(1,dt*3);
+        board.visible=nd<3.6;
+        if(board.visible){tmp.set(head.x,2.3,head.z);board.lookAt(tmp);
+          if(npc.talk){npc.chars+=dt*38;const n=Math.floor(npc.chars),L=LINES[npc.line];
+            if(n!==npc.shown){npc.shown=n;drawBoard(L.slice(0,n));if(n%3===0)snd('voice');}if(n>=L.length)npc.talk=false;}
+          else if(!npc.near&&npc.line<0)drawBoard('Approche, Chasseur... Appuie sur A ou X pour me parler.');}
+        npc.near=board.visible;
+      }
+      /* -- Son : écouteur spatial, crépitements, gouttes, nappes sombres -- */
+      if(A.c){
+        const L=A.c.listener,fq=V(0,0,-1).applyQuaternion(cam.getWorldQuaternion(_q)),uq=V(0,1,0).applyQuaternion(_q);
+        if(L.positionX){L.positionX.value=head.x;L.positionY.value=head.y;L.positionZ.value=head.z;L.forwardX.value=fq.x;L.forwardY.value=fq.y;L.forwardZ.value=fq.z;L.upX.value=uq.x;L.upY.value=uq.y;L.upZ.value=uq.z;}
+        if(clock.m!==mode){clock.m=mode;A.amb.gain.setTargetAtTime(mode==='dungeon'?1.5:.9,A.c.currentTime,1.2);}
+        if(Math.random()<dt*3)snd('crackle',V(head.x+(Math.random()-.5)*8,1.8,head.z+(Math.random()-.5)*8));
+        if(mode==='dungeon'&&Math.random()<dt*.3)snd('drip',V(head.x+(Math.random()-.5)*10,2.5,head.z+(Math.random()-.5)*10));
+        clock.pad=(clock.pad||0)-dt;
+        if(clock.pad<=0){clock.pad=4+Math.random()*4;const ns=mode==='dungeon'?[73.4,87.3,110,98,130.8]:[146.8,174.6,220,196];const f=ns[Math.random()*ns.length|0];tone(f,f,5,'sine',.06,null,true);}
+      }
 
       /* -- Particules -- */
       for(let j=0;j<NP;j++){const k=j*3;if(pl[j]>0){pl[j]-=dt*1.1;pp[k]+=pv[k]*dt;pp[k+1]+=pv[k+1]*dt;pp[k+2]+=pv[k+2]*dt;
